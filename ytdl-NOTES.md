@@ -1,10 +1,10 @@
-# ytdl 1.21.1 — Changelog & Logic Notes
+# ytdl 1.22.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.21.1 (2026-11-13) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.22.0 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -60,7 +60,7 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `<Url>` (positional) | — | Video, playlist or channel URL (a bare channel URL uses its Videos tab, 1.15.0) |
 | `-Out <dir>` | Videos folder | Base download folder (also holds the archive and rate file) |
 | `-Folder <name>` | playlist title / `YouTube` | Fixed subfolder name instead of the playlist title |
-| `-Quality best\|2160\|1440\|1080\|720\|480\|360` | `best` | Max video height |
+| `-Quality best\|4320\|2160\|1440\|1080\|720\|480\|360\|240\|144` | `best` | Max video height (4320, 240, 144: 1.22.0) |
 | `-AudioOnly` | off | mp3 instead of video |
 | `-Subs` | off | Embed English subtitles (manual + auto) |
 | `-Items "1-10,15"` | all | Playlist positions to download |
@@ -108,6 +108,7 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `-AudioFormat mp3/m4a/opus/best` | mp3 | Audio format; implies `-AudioOnly`. m4a/opus keep YouTube's own stream (no re-encode) (1.21.0) |
 | `-SponsorBlock mark/remove` | — | Chapters at SponsorBlock segments, or cut sponsor/self-promo/interaction segments out (1.21.0) |
 | `-LimitRate 5M` | — | Cap the whole run's speed; split across the downloads at once, pieces off (1.21.0) |
+| `-PoToken` | off | Fetch YouTube PO tokens through the bgutil provider (yt-dlp plugin + a local server on deno, installed into `%LOCALAPPDATA%\ytdl\pot` on first use). Mainly for signed-out runs (1.22.0) |
 | `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0) |
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
@@ -118,6 +119,13 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.22.0 — `-Quality 4320`, `240` and `144`; `-PoToken` (2026-11-14)
+| Change | Detail |
+|---|---|
+| **`-Quality`** | Now every height YouTube offers: `4320` (8K) above `2160`, `240` and `144` below `360`. 144 and 240 use the low-resolution settings (as 360/480: `-Parallel 3`, no background probe, early ETA). ETA priors for the new heights are guesses (0.012, 0.018 and 1.6 MB per second of video) until real runs replace them |
+| **`-PoToken`** | Installs bgutil 2.0.2 once (the yt-dlp plugin zip in `%LOCALAPPDATA%\ytdl\pot\plugins`, its server in `pot\server-2.0.2`; needs deno), starts the server on 127.0.0.1:4416 detached so ytdl's restarts don't kill it, passes `--plugin-dirs` to yt-dlp, checks the server at most every 30 s and restarts it if it went away. The run that started it stops it. Runs without `-PoToken` are unchanged. If the install or the server fails, the run carries on without tokens. Saved with `-Subscribe`; `-Doctor` reports whether it is installed |
+
+**Verified:** `tests\v1.22.0.ps1` 10/10 (online): `-Version`; `-Quality 144` and `240` on dewHjCVfle0 give 144 and 240 rows (ffprobe); `-Quality 4320 -Estimate` on EJr3uAQwGek accepted; `-Quality 999` refused; `-PoToken` installs, a signed-out 360p download works, the server is stopped after the run; yt-dlp's verbose log lists `bgutil:http-2.0.2` and requests a token. Check-Ytdl: ascii, parse 7/5.1, names ok. (The test's first two runs failed 3 checks because its helper was named `H`, the built-in alias of Get-History, which wins over a function; renamed `Get-Height`.)
 ### 1.21.1 — `-Unsubscribe` works again; the resolution check's cache saves (2026-11-13)
 **Found by** `context\tools\Check-Ytdl.ps1`'s new name-collision check on its first run: two script-level assignments to `$keep`, which in PowerShell is the `[int]` parameter `-Keep` (1.16.0; names ignore case).
 

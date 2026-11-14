@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.21.1 - tubepacer's command. Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.22.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -32,8 +32,8 @@ param(
     # Override the folder name (default: playlist title, or "YouTube" for single videos)
     [string]$Folder,
 
-    # Max video height: best, 2160, 1440, 1080, 720, 480, 360
-    [ValidateSet('best', '2160', '1440', '1080', '720', '480', '360')]
+    # Max video height: best, 4320, 2160, 1440, 1080, 720, 480, 360, 240, 144 (1.22.0: 4320, 240, 144)
+    [ValidateSet('best', '4320', '2160', '1440', '1080', '720', '480', '360', '240', '144')]
     [string]$Quality = 'best',
 
     # Extract audio only (mp3 unless -AudioFormat says otherwise)
@@ -47,6 +47,10 @@ param(
     # 1.21.0: SponsorBlock (community-submitted segments): mark = chapters at sponsor, intro, self-promotion etc.;
     # remove = cut out sponsor, self-promotion and 'subscribe' reminder segments
     [ValidateSet('mark', 'remove')] [string]$SponsorBlock,
+
+    # 1.22.0: use a PO-token provider (bgutil, run locally on deno) so YouTube's "confirm you're not a bot"
+    # checks have a proof-of-origin token to accept. Installed into %LOCALAPPDATA%\ytdl\pot on first use.
+    [switch]$PoToken,
 
     # 1.21.0: cap the whole run's download speed, e.g. 5M or 800K (per second). Split evenly across the downloads
     # running at once, with pieces off, so the total stays under it
@@ -227,7 +231,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.21.1'
+$YtdlVersion = '1.22.0'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -534,7 +538,7 @@ $subTask = if ($env:YTDL_TASKNAME) { $env:YTDL_TASKNAME } else { 'ytdl sync' }
 $subOptNames = @('Folder', 'Quality', 'AudioOnly', 'Subs', 'Items', 'Browser', 'Cookies', 'Parallel', 'Fragments',
                  'NoThumbnail', 'NoMetadata', 'Fast360', 'NoFastClient', 'Retries', 'MinFreeGB', 'Sleep',
                  'MinMinutes', 'MaxMinutes', 'Match', 'Exclude', 'After', 'Keep', 'KeepDays',   # 1.16.0: filters, retention
-                 'YtdlpArgs', 'Library', 'AudioFormat', 'SponsorBlock', 'LimitRate')   # 1.18.0, 1.19.0, 1.21.0
+                 'YtdlpArgs', 'Library', 'AudioFormat', 'SponsorBlock', 'LimitRate', 'PoToken')   # 1.18.0, 1.19.0, 1.21.0, 1.22.0
 # 1.16.0: options that -Sync applies itself after the run, so they aren't passed to the run
 $subSyncOnly = @('Keep', 'KeepDays')
 # The file where a subscription's runs record what they downloaded (for -Keep / -KeepDays)
@@ -1165,6 +1169,11 @@ if ($Doctor) {
     $dn = Get-Command deno -ErrorAction SilentlyContinue
     if (-not $dn) { Out-Check WARN 'deno' 'not found: yt-dlp may get only some formats (often 360p) or none' 'winget install DenoLand.Deno' }
     else { Out-Check OK 'deno' ("$(& $dn.Source --version 2>$null | Select-Object -First 1)" -replace '^deno ', '') }
+    # 1.22.0: PO-token provider (only used with -PoToken)
+    $pd = Join-Path $env:LOCALAPPDATA 'ytdl\pot'
+    $pz = Test-Path (Join-Path $pd 'plugins\bgutil-ytdlp-pot-provider.zip'); $pn = @(Get-ChildItem $pd -Directory -Filter 'server-*' -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'server\node_modules') })
+    if ($pz -and $pn.Count) { Out-Check OK 'PO token' "bgutil $($pn[0].Name -replace '^server-', '') installed (used with -PoToken)" '' }
+    else { Out-Check INFO 'PO token' 'not installed; ytdl -PoToken installs it on first use (needs deno)' '' }
     # Sign-in: -Browser/-Cookies given here, else the first subscription that uses one
     $sb = $Browser; $sc = $Cookies; $from = 'given'
     if (-not $sb -and -not $sc) { foreach ($x in @(Read-Subs)) { if ($x.Options.Browser) { $sb = $x.Options.Browser; $from = 'from your subscriptions'; break } elseif ($x.Options.Cookies) { $sc = $x.Options.Cookies; $from = 'from your subscriptions'; break } } }
@@ -1628,12 +1637,12 @@ function Get-PriorOverhead {
 }
 # Typical YouTube bitrate, MiB per second of video, by quality cap (rough; data takes over quickly).
 # Measured on Blender uploads: 360p 0.0235, 480p 0.0287 (1.1.0), 720p 0.0545, 1080p 0.0799 (1.2.1) MiB/s.
-$priorBitrate = @{ 'q360' = 0.025; 'q480' = 0.03; 'q720' = 0.055; 'q1080' = 0.08; 'q1440' = 0.3
-                   'q2160' = 0.6; 'qbest' = 0.15; 'audio' = 0.016 }
+$priorBitrate = @{ 'q144' = 0.012; 'q240' = 0.018; 'q360' = 0.025; 'q480' = 0.03; 'q720' = 0.055; 'q1080' = 0.08; 'q1440' = 0.3
+                   'q2160' = 0.6; 'q4320' = 1.6; 'qbest' = 0.15; 'audio' = 0.016 }   # 1.22.0: 144, 240, 4320 guessed
 # At 480p and below (and audio) transfer is only ~10-25% of each video's time, so a guessed
 # bandwidth costs little accuracy and allows an ETA before the first download completes.
 # Above 480p transfer dominates, so those wait for a real measurement.
-$lowRes        = $AudioOnly -or $Quality -in '360', '480' -or $LowResContent
+$lowRes        = $AudioOnly -or $Quality -in '144', '240', '360', '480' -or $LowResContent
 # (bandwidth prior: see "bandwidth model (1.4.2)" below; learned, 7.7 MiB/s until there is data)
 $ovShrinkN   = 1.0      # prior overhead counts as this many videos
 $brShrinkSec = 1200.0   # prior bitrate counts as this many seconds of video (a few 4K shorts can't swing it)
@@ -2213,7 +2222,74 @@ function Get-HelperArgs {
     $a = @()
     if ($script:formatsPlugin -or $script:thumbPlugin) { $a += @('--plugin-dirs', $helperDir) }
     if ($script:thumbPlugin) { $a += @('--use-postprocessor', 'YtdlThumbs:when=pre_process') }
-    $a
+    $a + (Get-PotArgs)
+}
+
+# ---- 1.22.0 -PoToken: bgutil PO-token provider (yt-dlp plugin + a local HTTP server run on deno) --------
+# The plugin (a zip) lives in its own plugin folder, loaded with --plugin-dirs only when -PoToken is given,
+# so runs without it are unchanged. The server listens on 127.0.0.1:4416 (the plugin's default). It is
+# started detached (not a child of this process): ytdl kills its own process tree on every restart, and
+# the server must outlive those. Any ytdl process starts it when it's down; the run that started it stops it.
+$potVer     = '2.0.2'
+$potDir     = Join-Path $env:LOCALAPPDATA 'ytdl\pot'
+$potPlugins = Join-Path $potDir 'plugins'
+$potZip     = Join-Path $potPlugins 'bgutil-ytdlp-pot-provider.zip'
+$potServer  = Join-Path $potDir "server-$potVer\server"
+$potPort    = 4416
+$script:potOn = $false; $script:potPid = 0; $script:potCheck = [datetime]::MinValue
+function Test-PotPort {
+    $c = New-Object Net.Sockets.TcpClient
+    try { $c.ConnectAsync('127.0.0.1', $potPort).Wait(500) -and $c.Connected } catch { $false } finally { $c.Dispose() }
+}
+function Install-PoToken {
+    if ((Test-Path $potZip) -and (Test-Path (Join-Path $potServer 'node_modules'))) { return }
+    $dn = Get-Command deno -ErrorAction SilentlyContinue
+    if (-not $dn) { throw 'deno is needed for -PoToken (winget install DenoLand.Deno)' }
+    Write-Host "[ytdl] Installing the PO-token provider (bgutil $potVer) into $potDir (once)..." -ForegroundColor Cyan
+    New-Item -ItemType Directory -Force $potPlugins | Out-Null
+    $rel = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider"
+    Invoke-WebRequest "$rel/releases/download/$potVer/bgutil-ytdlp-pot-provider.zip" -OutFile $potZip -UseBasicParsing
+    $src = Join-Path $potDir "src-$potVer.zip"
+    Invoke-WebRequest "$rel/archive/refs/tags/$potVer.zip" -OutFile $src -UseBasicParsing
+    $tmp = Join-Path $potDir "x-$potVer"; Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    Expand-Archive $src $tmp -Force
+    $top = @(Get-ChildItem $tmp -Directory)[0].FullName
+    Remove-Item -Recurse -Force (Split-Path $potServer) -ErrorAction SilentlyContinue
+    Move-Item $top (Split-Path $potServer)
+    Remove-Item -Recurse -Force $tmp, $src -ErrorAction SilentlyContinue
+    Push-Location $potServer
+    try { & $dn.Source install --allow-scripts=npm:canvas --frozen 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray } } finally { Pop-Location }
+    if (-not (Test-Path (Join-Path $potServer 'node_modules'))) { throw "deno install failed in $potServer" }
+}
+function Start-PoServer {
+    if (Test-PotPort) { return $true }
+    $dn = (Get-Command deno -ErrorAction SilentlyContinue).Source; if (-not $dn) { return $false }
+    $nm = Join-Path $potServer 'node_modules'
+    $cmd = "`"$dn`" run --allow-env --allow-net --allow-ffi=. --allow-read=. ../src/main.ts"
+    # Win32_Process.Create: no parent link, so ytdl's own process-tree kills leave the server running
+    $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd; CurrentDirectory = $nm; ProcessStartupInformation = (New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }) }
+    if ($r.ReturnValue -ne 0) { return $false }
+    if ($Worker -eq 0 -and -not $script:potPid) { $script:potPid = [int]$r.ProcessId }
+    for ($i = 0; $i -lt 60; $i++) { Start-Sleep -Milliseconds 250; if (Test-PotPort) { return $true } }
+    $false
+}
+function Stop-PoServer {
+    if (-not $script:potPid) { return }
+    try { Stop-Process -Id $script:potPid -Force -ErrorAction Stop } catch { }
+    $script:potPid = 0
+}
+# --plugin-dirs for the provider; checks the server at most every 30 s and restarts it if it went away
+function Get-PotArgs {
+    if (-not $script:potOn) { return @() }
+    if (((Get-Date) - $script:potCheck).TotalSeconds -gt 30) {
+        $script:potCheck = Get-Date
+        if (-not (Start-PoServer)) { Write-Host "[ytdl] The PO-token server didn't start; continuing without tokens." -ForegroundColor Yellow; $script:potOn = $false; return @() }
+    }
+    @('--plugin-dirs', $potPlugins)
+}
+if ($PoToken -and -not $Doctor -and -not $Version) {
+    try { Install-PoToken; $script:potOn = $true; [void](Get-PotArgs) }
+    catch { Write-Host "[ytdl] -PoToken: $($_.Exception.Message); continuing without it." -ForegroundColor Yellow }
 }
 $helperFailPattern = "KeyError: 'YtdlThumbs|no such option: --(plugin-dirs|use-postprocessor)|ytdl_thumbs|ytdl_formats|YtdlYoutube"
 
@@ -2663,7 +2739,7 @@ if ($isCoordinator) {
             foreach ($log in $w.Logs) { Remove-Item $log -Force -ErrorAction SilentlyContinue }
             if ($w.QFile) { Remove-Item -LiteralPath $w.QFile -Force -ErrorAction SilentlyContinue }
         }
-        Clear-StopFiles
+        Clear-StopFiles; Stop-PoServer   # 1.22.0
     }
 
     $codes = @($workers | ForEach-Object { $_.Proc.ExitCode })
@@ -3186,7 +3262,7 @@ try {
         try { $prober.Stop() } catch { }; try { $prober.Dispose() } catch { }
         Write-LogOnly "[ytdl-event] size probe: $($probeSync.Probed) found, $($probeSync.Failed) failed"
     }
-    if ($Worker -eq 0) { Clear-StopFiles }
+    if ($Worker -eq 0) { Clear-StopFiles; Stop-PoServer }   # 1.22.0: Stop-PoServer
 }
 
 if ($pass -gt $totalPasses) { $pass = $totalPasses }

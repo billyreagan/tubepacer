@@ -199,7 +199,7 @@ Option | What it does | Default
 
 Option | What it does | Default
 :---|:---|:---
-`-Quality HEIGHT` | Highest video height: best, 2160, 1440, 1080, 720, 480 or 360 | best
+`-Quality HEIGHT` | Highest video height: best, 4320, 2160, 1440, 1080, 720, 480, 360, 240 or 144 | best
 `-AudioOnly` | Extract audio only (mp3 unless `-AudioFormat` says otherwise) |
 `-AudioFormat FORMAT` | mp3 (re-encoded, plays everywhere), m4a or opus (YouTube's own stream, no re-encode), or best. Implies `-AudioOnly` | mp3
 `-Fast360` | With `-Quality 360`: YouTube's combined H.264/AAC stream, for players without AV1 |
@@ -217,6 +217,7 @@ Option | What it does | Default
 `-Cookies FILE` | Or: an exported cookies.txt (Netscape format) |
 `-Sleep SECONDS` | Pause between videos, randomized up to 2x. -1 = adaptive pacing, 0 = none | -1
 `-NoFastClient` | Use yt-dlp's default YouTube clients instead of tubepacer's faster single-client extraction |
+`-PoToken` | Get YouTube PO tokens from the bgutil provider, installed on first use (needs deno). Mainly for signed-out runs |
 
 </details>
 
