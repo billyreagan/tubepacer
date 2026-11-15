@@ -157,7 +157,11 @@ ytdl -Queue
 
 ## How pacing works
 
-Pacing asks YouTube less often. It doesn't hide. It has three parts, and all ytdl runs and workers on the PC share them through `%LOCALAPPDATA%\ytdl\pace.json`, because YouTube limits the IP address and the account, not the folder.
+Pacing asks YouTube less often. It doesn't hide.
+
+> **What tubepacer will not do:** rotate proxies or IP addresses, fake browser fingerprints, or cycle cookies across accounts.
+
+It has three parts, and all ytdl runs and workers on the PC share them through `%LOCALAPPDATA%\ytdl\pace.json`, because YouTube limits the IP address and the account, not the folder.
 
 **Budget.** A shared one-hour log of videos started. The limit is about half of the figures in yt-dlp's wiki: 150 videos an hour signed out and 1,000 signed in. At 80% of the limit the run slows down one level. Over the limit, it waits until the oldest start drops out of the hour, then carries on.
 
