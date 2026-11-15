@@ -44,6 +44,15 @@ It also handles what usually ends a long run: rotated sign-in cookies, silent 36
 
 ## Get started in a minute
 
+With [Scoop](https://scoop.sh), one step installs tubepacer, yt-dlp, ffmpeg and deno; then skip to step 5:
+
+```powershell
+scoop bucket add tubepacer https://github.com/billyreagan/scoop-tubepacer
+scoop install tubepacer
+```
+
+Or by hand:
+
 1. Install yt-dlp, ffmpeg and deno:
 
     ```powershell
