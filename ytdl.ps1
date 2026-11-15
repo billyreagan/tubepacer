@@ -267,7 +267,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.23.0'
+$YtdlVersion = '1.24.0'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -1305,6 +1305,13 @@ if ($Doctor) {
         Microsoft.PowerShell.Utility\Write-Host (' {0,-15} {1}' -f $what, $detail)
         if ($fix -and $state -ne 'OK') { Microsoft.PowerShell.Utility\Write-Host ('                       -> ' + $fix) -ForegroundColor DarkGray }
     }
+    # 1.24.0: Pacey, the mascot, as a two-line text face (two tall eyes, a play-button mouth) when every check passes
+    function Write-PaceyFace([string]$msg) {
+        $eye = [string][char]0x2588; $play = [string][char]0x25B6
+        Microsoft.PowerShell.Utility\Write-Host ("  $eye $eye") -ForegroundColor Magenta
+        Microsoft.PowerShell.Utility\Write-Host ("   $play   ") -ForegroundColor Magenta -NoNewline
+        Microsoft.PowerShell.Utility\Write-Host $msg -ForegroundColor Green
+    }
     Microsoft.PowerShell.Utility\Write-Host "ytdl $YtdlVersion doctor  |  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -ForegroundColor Cyan
     # yt-dlp
     $v = if ($ytdlp) { "$(& $ytdlp --version 2>$null | Select-Object -First 1)".Trim() } else { '' }
@@ -1392,7 +1399,7 @@ if ($Doctor) {
     Microsoft.PowerShell.Utility\Write-Host ''
     if ($script:docBad) { Microsoft.PowerShell.Utility\Write-Host "$($script:docBad) problem(s) found; the fix is under each one." -ForegroundColor Red }
     elseif ($script:docWarn) { Microsoft.PowerShell.Utility\Write-Host "Works, with $($script:docWarn) thing(s) worth a look." -ForegroundColor Yellow }
-    else { Microsoft.PowerShell.Utility\Write-Host 'Everything ytdl needs is in order.' -ForegroundColor Green }
+    else { Write-PaceyFace 'Everything ytdl needs is in order.' }
     Restore-Console
     exit $(if ($script:docBad) { 1 } else { 0 })
 }

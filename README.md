@@ -3,7 +3,7 @@
 <a href="#readme">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.svg">
-    <img alt="tubepacer" src=".github/banner-light.svg" width="960">
+    <img alt="tubepacer, with its mascot Pacey" src=".github/banner-light.svg" width="960">
   </picture>
 </a>
 
@@ -138,7 +138,7 @@ ytdl "https://www.youtube.com/@SomeChannel" -Estimate
 ytdl -Sync -Estimate
 ```
 
-**Pause a big run and resume later.** Press `P` in the download window, or from any other terminal:
+<img src=".github/mascot/pacey-paused.svg" width="24" alt=""> **Pause a big run and resume later.** Press `P` in the download window, or from any other terminal:
 
 ```powershell
 ytdl -Pause
@@ -378,6 +378,8 @@ tubepacer is a wrapper and is not affiliated with the yt-dlp project. It does no
 
 Download only videos you have the right to keep, and follow YouTube's terms of service.
 
+The magenta face is Pacey, tubepacer's mascot: eyes on the pace, a play button for a mouth.
+
 ### Contributing
 
 Each release records what changed and how it was verified in [ytdl-NOTES.md](ytdl-NOTES.md). Changes to timing behaviour need a benchmark run; see the report for the method.
@@ -386,5 +388,7 @@ Each release records what changed and how it was verified in [ytdl-NOTES.md](ytd
 * **Versioning**: minor versions (1.**21**.0) add options or change behaviour; patch versions (1.21.**1**) fix and tune
 
 ### License
+
+<p align="center"><a href="#readme"><img src=".github/mascot/pacey.svg" width="48" alt="Pacey, the tubepacer mascot"></a></p>
 
 [MIT](LICENSE).

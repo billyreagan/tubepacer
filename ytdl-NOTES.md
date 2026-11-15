@@ -1,10 +1,10 @@
-# ytdl 1.23.0 — Changelog & Logic Notes
+# ytdl 1.24.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.23.0 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.24.0 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -129,6 +129,12 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.24.0 — Pacey in `-Doctor` (2026-11-14)
+| Change | Detail |
+|---|---|
+| **Mascot face** | When every `-Doctor` check passes (no FAIL, no WARN), the closing line shows Pacey, the project mascot, as a two-line magenta text face: two tall eyes (`U+2588`) over a play-button mouth (`U+25B6`), then the green "Everything ytdl needs is in order." Built from `[char]` codes, so the script stays ASCII. Problem and warning summaries are unchanged; exit codes unchanged |
+
+**Verified:** `Write-PaceyFace` loaded by AST and run in PowerShell 7 and 5.1 (both print the face); a real `-Doctor` on a PC with one warning prints the yellow summary without the face, exit 0; `-Version` prints 1.24.0. Check-Ytdl: ascii, parse 7/5.1, names ok.
 ### 1.23.0 — Output options, `-Live`, `-History`, podcast feeds (2026-11-14)
 | Change | Detail |
 |---|---|
