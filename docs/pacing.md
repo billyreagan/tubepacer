@@ -105,7 +105,7 @@ Not measured:
 - whether requests during a block extend it
 - where exactly YouTube's thresholds sit for a given IP address or account
 
-The budget and the breaker are set conservatively for those reasons.
+The budget and the breaker are set conservatively for those reasons. Runs on other connections and accounts help fill these gaps: post yours in [Pacing reports](https://github.com/billyreagan/tubepacer/discussions/categories/pacing-reports). The form asks for the version, sign-in, bot checks, the highest level reached and the pacing part of `ytdl -Doctor`.
 
 ## Prior art
 

@@ -185,7 +185,7 @@ It also tells YouTube's signals apart:
 | "Video unavailable" three times, signed in | The account may be limited | Suggests trying without `-Browser`/`-Cookies` |
 | 429 on captions only | Captions have a stricter limit | Captions wait 10 s each; videos are not slowed |
 
-yt-dlp's own retries back off too (`--retry-sleep`: extractor 5–300 s, http 1–30 s, fragment 1–20 s, exponential) instead of firing back to back. `ytdl -Doctor` shows the breaker, this hour's budget and the folder's saved level. `-Sleep N` turns adaptive pacing off and uses a fixed pause, and `-IgnoreCooldown` starts while the breaker is open, which isn't advised. The full design, with sources, is in [docs/pacing.md](docs/pacing.md).
+yt-dlp's own retries back off too (`--retry-sleep`: extractor 5–300 s, http 1–30 s, fragment 1–20 s, exponential) instead of firing back to back. `ytdl -Doctor` shows the breaker, this hour's budget and the folder's saved level. `-Sleep N` turns adaptive pacing off and uses a fixed pause, and `-IgnoreCooldown` starts while the breaker is open, which isn't advised. The full design, with sources, is in [docs/pacing.md](docs/pacing.md). Hit a bot check, or ran a big job without one? Share it in [Pacing reports](https://github.com/billyreagan/tubepacer/discussions/categories/pacing-reports): runs on other connections show where YouTube's limits really sit.
 
 ## How recovery works
 

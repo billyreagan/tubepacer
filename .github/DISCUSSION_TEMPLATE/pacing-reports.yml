@@ -1,0 +1,82 @@
+title: "[Pacing] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing a run. Reports from other connections and accounts show where YouTube's limits really sit, which one PC can't measure (see [What is measured](https://github.com/billyreagan/tubepacer/blob/main/docs/pacing.md#what-is-measured-and-what-isnt)).
+
+        Don't paste cookies or browser profile paths. Leave out channel or video names if you'd rather keep them private.
+  - type: input
+    id: version
+    attributes:
+      label: tubepacer version
+      description: Output of `ytdl -Version`
+      placeholder: "1.25.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: signed-in
+    attributes:
+      label: Signed in?
+      options:
+        - "Yes (-Browser)"
+        - "No"
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The options you used. Replace URLs and paths with placeholders if you like.
+      placeholder: "ytdl <channel> -Browser firefox -Parallel 2"
+  - type: input
+    id: videos
+    attributes:
+      label: Videos downloaded / attempted
+      placeholder: "48 / 50"
+    validations:
+      required: true
+  - type: input
+    id: bot-checks
+    attributes:
+      label: Bot checks and 429s
+      description: How many "Sign in to confirm you're not a bot" messages and HTTP 429s the run hit
+      placeholder: "2 bot checks, 0 429s"
+    validations:
+      required: true
+  - type: dropdown
+    id: level
+    attributes:
+      label: Highest pacing level reached
+      options:
+        - L0
+        - L1
+        - L2
+        - L3
+        - L4
+        - L5
+        - "Don't know"
+  - type: dropdown
+    id: breaker
+    attributes:
+      label: Did the circuit breaker open (exit code 75)?
+      options:
+        - "No"
+        - "Yes"
+        - "Don't know"
+  - type: input
+    id: connection
+    attributes:
+      label: Connection
+      description: Rough type only, e.g. home fiber, mobile, VPN, shared office. No IP addresses.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Pacing part of `ytdl -Doctor`
+      description: Run it right after the run. It shows the breaker, this hour's budget and the folder's saved level.
+      render: text
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: How long a block lasted, what you changed, whether a slower -Sleep helped, and so on.
