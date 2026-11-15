@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.23.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.24.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -267,7 +267,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.24.0'
+$YtdlVersion = '1.24.1'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -1916,9 +1916,10 @@ Read-NetHistory
 # together with the progress-aware current video (see Get-EtaSeconds). A fixed 5 MiB/s prior
 # would have made it worse (39.6%), which is why the prior is learned rather than fixed.
 $bwGlobalFile = Join-Path $env:LOCALAPPDATA 'ytdl\bandwidth.json'
-$bwGlobal = @(); $bwCaps = @()
+$bwGlobal = @(); $bwCaps = @(); $bwPar = @{}
 if (Test-Path $bwGlobalFile) { try { $bwj = Get-Content $bwGlobalFile -Raw | ConvertFrom-Json
-    $bwGlobal = @($bwj.Draws | ForEach-Object { [double]$_ }); if ($bwj.Caps) { $bwCaps = @($bwj.Caps | ForEach-Object { [double]$_ }) } } catch { } }
+    $bwGlobal = @($bwj.Draws | ForEach-Object { [double]$_ }); if ($bwj.Caps) { $bwCaps = @($bwj.Caps | ForEach-Object { [double]$_ }) }
+    if ($bwj.PDraws) { foreach ($p in $bwj.PDraws.PSObject.Properties) { $bwPar[$p.Name] = @($p.Value | ForEach-Object { [double]$_ }) } } } catch { } }
 $bwPriorMiBps = 7.7
 if ($bwGlobal.Count -ge 5) { $sortedBw = @($bwGlobal | Sort-Object); $bwPriorMiBps = $sortedBw[[int][math]::Floor($sortedBw.Count / 2)] }
 # 1.8.0: the connection saturates. Three real parallel runs moved 13.7, 14.5 (3 workers) and 14.9 MiB/s
@@ -1930,16 +1931,16 @@ if ($bwGlobal.Count -ge 5) { $sortedBw = @($bwGlobal | Sort-Object); $bwPriorMiB
 # 2002 and 2003 runs' first estimates: -6% -> -4% and +9% -> 0%. Without a learned cap: the old rule.
 $bwCap = 0.0
 if ($bwCaps.Count -ge 1) { $sc = @($bwCaps | Sort-Object); $bwCap = $sc[[int][math]::Floor($sc.Count / 2)] }
+# 1.24.1: the n*d rule above read each download ~1.4-2.5x too fast. In 654 downloads of 10+ MiB from
+# 3-worker bench runs the median was 4.9 MiB/s (4.2-6.0 at every size from 10 MiB to 1 GB) against
+# 6.4-11 from the rule (d came out small because it priced transfer at the single-download speed), and
+# worker estimates ran 18% low in the first quarter of a run. Now: the median of the last 50 downloads
+# from runs with this many workers (PDraws in bandwidth.json), and cap / n until there are 5.
 function Get-StreamShare([int]$n) {
     if ($n -le 1) { return 1.0 }
-    if ($bwCap -gt 0) {
-        $d = 0.75
-        if ($eta.AvgDur -gt 0) {
-            $x = $eta.AvgDur * (Get-Bitrate); $t = $x / $bwPriorMiBps
-            if ($t -gt 0) { $d = $t / ($t + (Get-PriorOverhead)) }
-        }
-        return [math]::Min(1.0, $bwCap / ($n * $d * $bwPriorMiBps))
-    }
+    $pd = $bwPar["$n"]
+    if ($pd -and $pd.Count -ge 5) { $s = @($pd | Sort-Object); return $s[[int][math]::Floor($s.Count / 2)] / $bwPriorMiBps }
+    if ($bwCap -gt 0) { return [math]::Min(1.0, $bwCap / ($n * $bwPriorMiBps)) }
     return (Get-ParallelSpeedup $n) / $n
 }
 function Update-BwPrior {
@@ -1987,7 +1988,17 @@ function Get-Bitrate {
 # Seconds per MiB from COMPLETED transfers only (this run blended with capped history).
 # Partial progress lines were tried and read ~2x too slow (each download's ramp-up), which
 # pushed estimates up to +172%.
+# 1.24.1: under -LimitRate a download can't beat its share of the limit. A 15-video 1080p run at 2 MB/s
+# first read 170 s for 1,726 s (-90%): the model and history speeds ignored the limit.
 function Get-SecPerMiB {
+    $spm = Get-SecPerMiBModel
+    if ($limitBytes -le 0) { return $spm }
+    $sh = if ($Worker -gt 0) { [math]::Max(1, $WorkerCount) } elseif ($isCoordinator) { [math]::Max(1, $workersN) } else { 1 }
+    $floor = $sh * 1MB / $limitBytes
+    if ($null -eq $spm) { if ($floor -gt $bwPriorSecPerMiB) { return $floor }; return $null }   # a limit under the typical speed sets it
+    return [math]::Max($spm, $floor)
+}
+function Get-SecPerMiBModel {
     # 1) per-stream draws (this run + the folder's last 10), shrunk toward the learned typical speed
     $draws = @($eta.HDraws) + @($eta.Draws)
     if ($draws.Count -gt 0) {
@@ -2016,6 +2027,35 @@ function Get-Fit {
     $spm = Get-SecPerMiB
     if ($null -eq $spm) { return $null }
     return @($spm, (Get-Overhead))
+}
+
+# 1.24.1: -Parallel's combined finish once a worker is done. Each worker's estimate uses the speed it got
+# sharing the connection with all n workers, but downloads speed up as workers finish (bench: ~7.5 MiB/s
+# alone, 5.2 two at once, 4.3 three at once, i.e. v1 / (1 + 0.4 (k - 1))), so the last worker's estimate
+# ran +34% high in the last quarter of a run. This splits each running worker's time left into fixed
+# cost (videos left x overhead) and transfer, and replays the finishes with transfer rescaled to the
+# workers still running. Only after a first finish: applied earlier it made the start (already low)
+# worse. Replay on 312 combined-ETA points of the bench logs: last quarter 38% -> 34% mean error, the
+# rest unchanged (bench\tail-replay.ps1 -OnlyAfterFirst). $null while all n are still running.
+$tailA = 0.4
+function Get-TailFinish($run, [int]$n) {
+    $now = Get-Date; $ovPV = Get-Overhead
+    $live = @(foreach ($w in $run) { if ($null -eq $w.Eta) { continue }; $r = ($w.Eta - $now).TotalSeconds
+        if ($r -gt 0) { $ov = [math]::Min($r, [math]::Max(0, $w.Total - $w.Done) * $ovPV); @{ Ov = $ov; X = $r - $ov; P = 0.0; T = 0.0 } } })
+    if ($live.Count -eq 0 -or $live.Count -ge $n) { return $null }
+    $t = 0.0
+    while ($live.Count) {
+        $m = $live.Count; $dsum = 0.0
+        foreach ($w in $live) { $dsum += $w.X / [math]::Max(0.001, $w.Ov + $w.X) }
+        $d = $dsum / $m
+        $g = (1 + $tailA * $d * ($m - 1)) / (1 + $tailA * $d * ($n - 1))
+        $best = [double]::MaxValue
+        foreach ($w in $live) { $w.T = [math]::Max(0.001, $w.Ov + $w.X * $g); $left = (1 - $w.P) * $w.T; if ($left -lt $best) { $best = $left } }
+        $t += $best
+        foreach ($w in $live) { $w.P += $best / $w.T }
+        $live = @($live | Where-Object { $_.P -lt 0.9999 })
+    }
+    return $t
 }
 
 function Get-EtaSeconds {
@@ -2189,7 +2229,10 @@ function Save-Rate {
         if ($eta.BrSec -gt 0) { $savedRates["br-$qualKey"] = @{ MiB = $eta.BrMiB; Sec = $eta.BrSec; MiBPerVideoSec = [math]::Round((Get-Bitrate), 4); Updated = $now } }
         $bm = $eta.HBwMiB + $eta.LBwMiB; $bs = $eta.HBwSec + $eta.LBwSec
         $allDraws = @(@($eta.HDraws) + @($eta.Draws) | Select-Object -Last 10)
-        if ($bm -gt 0) { $savedRates["bw-$netKey"] = @{ MiB = $bm; Sec = $bs; MiBPerSec = [math]::Round($bm / $bs, 2); Draws = @($allDraws | ForEach-Object { [math]::Round($_, 5) }); Updated = $now } }
+        # 1.24.1: speeds under -LimitRate say nothing about the connection. E10 (2 MB/s) saved its slow
+        # draws and a 2.17 MiB/s cap, and the next 4 unlimited runs first read +168% to +435%.
+        $learnBw = ($limitBytes -le 0)
+        if ($bm -gt 0 -and $learnBw) { $savedRates["bw-$netKey"] = @{ MiB = $bm; Sec = $bs; MiBPerSec = [math]::Round($bm / $bs, 2); Draws = @($allDraws | ForEach-Object { [math]::Round($_, 5) }); Updated = $now } }
         # 1.8.0: drop pre-1.0 keys (runtime-ratio/regression ETA models) no version reads any more.
         foreach ($k in @($savedRates.Keys)) { if ($k -notmatch '^(ov|br|bw)-') { $savedRates.Remove($k) } }
         $savedRates | ConvertTo-Json -Depth 3 | Set-Content -Path $rateFile -Encoding ASCII
@@ -2197,13 +2240,17 @@ function Save-Rate {
         # 1.8.0: once the connection's cap is known, parallel workers' speeds say more about the cap than
         # about a single download (dividing them by the share inflated or deflated them), so only
         # one-at-a-time runs add here; the coordinator records the cap instead.
-        if ($eta.Draws.Count -gt 0 -and ($workersN -le 1 -or $bwCap -le 0)) {
-            $cur = $bwGlobal; $caps = $bwCaps
+        # 1.24.1: parallel workers also keep their own downloads' speeds by worker count (PDraws, see Get-StreamShare).
+        if ($learnBw -and $eta.Draws.Count -gt 0) {
+            $cur = $bwGlobal; $caps = $bwCaps; $par = @{}; foreach ($k in $bwPar.Keys) { $par[$k] = $bwPar[$k] }
             $lowRun = 0
-            try { $j = Get-Content $bwGlobalFile -Raw | ConvertFrom-Json; $cur = @($j.Draws | ForEach-Object { [double]$_ }); if ($j.Caps) { $caps = @($j.Caps | ForEach-Object { [double]$_ }) }; if ($j.CapLowRun) { $lowRun = [int]$j.CapLowRun } } catch { }
-            $g = @(@($cur) + @($eta.Draws | ForEach-Object { [math]::Round((1 / $_) / $bwShare, 2) }) | Select-Object -Last 50)
+            try { $j = Get-Content $bwGlobalFile -Raw | ConvertFrom-Json; $cur = @($j.Draws | ForEach-Object { [double]$_ }); if ($j.Caps) { $caps = @($j.Caps | ForEach-Object { [double]$_ }) }; if ($j.CapLowRun) { $lowRun = [int]$j.CapLowRun }
+                  if ($j.PDraws) { $par = @{}; foreach ($p in $j.PDraws.PSObject.Properties) { $par[$p.Name] = @($p.Value | ForEach-Object { [double]$_ }) } } } catch { }
+            $g = @($cur)
+            if ($workersN -le 1 -or $bwCap -le 0) { $g = @(@($cur) + @($eta.Draws | ForEach-Object { [math]::Round((1 / $_) / $bwShare, 2) }) | Select-Object -Last 50) }
+            if ($workersN -gt 1) { $par["$workersN"] = @(@($par["$workersN"]) + @($eta.Draws | ForEach-Object { [math]::Round(1 / $_, 2) }) | Where-Object { $_ -gt 0 } | Select-Object -Last 50) }
             New-Item -ItemType Directory -Force (Split-Path $bwGlobalFile) | Out-Null
-            @{ Draws = $g; Caps = @($caps); CapLowRun = $lowRun; Updated = $now } | ConvertTo-Json -Depth 3 | Set-Content -Path $bwGlobalFile -Encoding ASCII
+            @{ Draws = $g; Caps = @($caps); CapLowRun = $lowRun; PDraws = $par; Updated = $now } | ConvertTo-Json -Depth 3 | Set-Content -Path $bwGlobalFile -Encoding ASCII
         }
     } catch { }
 }
@@ -2916,7 +2963,10 @@ if ($isCoordinator) {
                                     foreach ($bt in $batches) { foreach ($x in $bt.X) { $left += $fitQ[1] + $fitQ[0] * $x } }
                                     $secAll = $left / $n
                                     $fin = (Get-Date).AddSeconds($secAll)
-                                } else { $fin = ($etas | Measure-Object -Maximum).Maximum }
+                                } else {
+                                    $fin = ($etas | Measure-Object -Maximum).Maximum
+                                    $tf = Get-TailFinish $run $n; if ($null -ne $tf) { $fin = (Get-Date).AddSeconds($tf) }   # 1.24.1
+                                }
                                 $msg += " | ETA ~$(Format-Dur ($fin - (Get-Date)).TotalSeconds) (finish ~$($fin.ToString('ddd h:mm tt')))"
                             }
                             if ($msg -ne $lastOverall) { Write-Host $msg -ForegroundColor Cyan; $lastOverall = $msg }
@@ -2969,7 +3019,7 @@ if ($isCoordinator) {
     # 1.8.0: learn the connection's total throughput from full 3+-worker runs (not stopped, 1+ GB, 5+ min:
     # start-up made a 37 s test run read 5.8 MiB/s against ~14.5 in real 22-30 min runs).
     $capSec = ((Get-Date) - $capT0).TotalSeconds
-    if ($n -ge 3 -and $final -ne 2 -and $capMiB -ge 1024 -and $capSec -ge 300) {
+    if ($n -ge 3 -and $final -ne 2 -and $capMiB -ge 1024 -and $capSec -ge 300 -and $limitBytes -le 0) {   # 1.24.1: not under -LimitRate
         $capNow = [math]::Round($capMiB / $capSec, 2)
         try {
             $j = $null; if (Test-Path $bwGlobalFile) { $j = Get-Content $bwGlobalFile -Raw | ConvertFrom-Json }
@@ -2986,7 +3036,8 @@ if ($isCoordinator) {
             }
             if ($use) { $cp = @(@($cp) + $capNow | Select-Object -Last 10); if ($lowRun -ge 3) { $lowRun = 0 } }
             New-Item -ItemType Directory -Force (Split-Path $bwGlobalFile) | Out-Null
-            @{ Draws = @($dr); Caps = @($cp); CapLowRun = $lowRun; Updated = (Get-Date).ToString('s') } | ConvertTo-Json -Depth 3 | Set-Content -Path $bwGlobalFile -Encoding ASCII
+            $o = @{ Draws = @($dr); Caps = @($cp); CapLowRun = $lowRun; Updated = (Get-Date).ToString('s') }; if ($j -and $j.PDraws) { $o.PDraws = $j.PDraws }
+            $o | ConvertTo-Json -Depth 3 | Set-Content -Path $bwGlobalFile -Encoding ASCII
             Write-LogOnly ("[ytdl-event] connection cap: {0:N0} MiB in {1:N0} s = {2} MiB/s across {3} workers{4}" -f $capMiB, $capSec, $capNow, $n, $(if ($use) { '' } else { " (not learned: under 70% of the usual; $lowRun low in a row)" }))
         } catch { }
     }

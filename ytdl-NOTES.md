@@ -1,10 +1,10 @@
-# ytdl 1.24.0 — Changelog & Logic Notes
+# ytdl 1.24.1 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.24.0 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.24.1 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -129,6 +129,15 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.24.1 — More accurate estimates: parallel speed, `-LimitRate`, the last worker (2026-11-14)
+| Change | Detail |
+|---|---|
+| **Parallel per-download speed** | The old rule (each of n workers gets min(single, cap / (n x d))) read each download 1.4-2.5x too fast: 654 downloads of 10+ MiB in 3-worker bench runs had a median of 4.9 MiB/s (4.2-6.0 at every size) against 6.4-11 from the rule, and worker estimates ran 18% low in the first quarter of a run. Now each worker saves its downloads' speeds by worker count (`PDraws` in `bandwidth.json`, last 50 per count) and the prior is their median; until there are 5, cap / n |
+| **`-LimitRate`** | Estimates can't beat the limit any more (a floor of share x 1 MiB / limit s per MiB; share = worker count for a worker or the coordinator). A 15-video 1080p run at 2 MB/s first read 170 s for 1,726 s (-90%). Runs under a limit no longer save speeds (folder history, `Draws`, `PDraws`, `Caps`): the 2 MB/s bench run had saved a 2.17 MiB/s cap and slow draws, and the next 4 unlimited runs first read +168% to +435% |
+| **Combined finish (`-Parallel`)** | Once a worker is done, the "ALL:" finish no longer takes the latest worker's own estimate as-is: downloads speed up as workers finish (~7.5 MiB/s alone, 5.2 two at once, 4.3 three at once), so that estimate ran +34% high in the last quarter. Each running worker's time left is split into fixed cost (videos left x overhead) and transfer, and the finishes are replayed with transfer rescaled to the workers still running (per-stream speed ~ 1 / (1 + 0.4 (k - 1))). Not applied while all workers run (it made the already-low start worse) |
+
+**Measured (bench logs, replay):** combined ETA last quarter 38% -> 34% mean error, bias +34% -> +24%, the rest unchanged (`bench\tail-replay.ps1 -OnlyAfterFirst`, 312 points). Per-worker ETAs overall 18% mean error, bias 0%, but -18% in the first quarter (`bench\worker-eta.ps1`), the part the new parallel prior addresses; real-run validation pending.
+**Verified:** `tests\v1.24.1.ps1` 29/29 (offline, functions taken from the script: stream share from PDraws / cap / old rule, the -LimitRate floor for one run, a worker and the coordinator, Save-Rate writing PDraws and skipping all speed learning under a limit, the tail replay); `tests\v1.23.0.ps1` offline 22/22 apart from its version check. Check-Ytdl: ascii, parse 7/5.1, names, case variants.
 ### 1.24.0 — Pacey in `-Doctor` (2026-11-14)
 | Change | Detail |
 |---|---|
