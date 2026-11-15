@@ -1,10 +1,10 @@
-# ytdl 1.24.2 — Changelog & Logic Notes
+# ytdl 1.25.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.24.2 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.25.0 (2026-11-15) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -13,14 +13,60 @@
 
 ## Files
 
-A release (`tubepacer.zip`) holds these files; extract them together into one folder on `PATH`.
+Since 2026-11-13 the project lives in its own folder, `C:\Users\Zuren\.local\bin\ytdl-project\`. Only the two launchers stay in `C:\Users\Zuren\.local\bin` (on PATH). New project documents go in `ytdl-project\` too.
 
 | File | Role |
 |---|---|
-| `ytdl.ps1` | The tool. Runs in Windows PowerShell 5.1 and PowerShell 7. Workers, `-Schedule` and the browser button run it by its own full path, so keep it where it was installed (or re-run `-Schedule` / the browser-button setup after moving it) |
-| `ytdl.cmd` | Launcher for Command Prompt and the Run dialog: runs `ytdl-cmd.ps1` in PowerShell 7 (`pwsh`) if installed, otherwise Windows PowerShell 5.1 |
-| `ytdl-cmd.ps1` | Helper for `ytdl.cmd`: re-reads the raw command line so option values keep their `:` and `-`, then runs `ytdl.ps1` |
-| `ytdl-NOTES.md` | This file |
+| `bin\ytdl.ps1` | Launcher for PowerShell: runs `ytdl-project\ytdl.ps1` in the same session (so Ctrl+C, P and exit codes behave as before), and exits 1 if PowerShell rejects an option |
+| `bin\ytdl.cmd` | Launcher for cmd / Run dialog: runs `ytdl-project\ytdl.ps1` in PowerShell 7 (`pwsh`) if installed, otherwise Windows PowerShell 5.1 (1.2.1) |
+| `ytdl-project\ytdl.ps1` | The tool. Runs in Windows PowerShell 5.1 and PowerShell 7. Workers, `-Schedule` and the browser button run it by this full path |
+| `ytdl-project\ytdl-NOTES.md` | This file |
+| `ytdl-project\next\ytdl.ps1` | Staging copy of the next version while it's built and tested; copied over `ytdl.ps1` on release |
+| `ytdl-project\bench\` | `bench1080.ps1` (ytdl vs yt-dlp, 1080p batches; run `pwsh -File ...\bench\bench1080.ps1 -Sizes 1,6`) and `results\` (all runs' `results-run*.jsonl` and logs; moved from `%TEMP%\ytdl-bench`) |
+| `ytdl-project\tests\` | Test scripts used to verify releases (offline checks, single-video timing, failed list / browser link) |
+| `ytdl-project\backups\` | Every `ytdl.ps1.bak-<version>` below, `ytdl.cmd.bak-1.2.0`, and `ytdl.ps1.broken-1.15.0-wip` (the half-written 1.15.0 an API error left behind) |
+| `ytdl.ps1.bak-1.24.2` | 1.24.2, kept for rollback (before 1.25.0's YouTube limit guard) |
+| `ytdl.ps1.bak-1.24.1` | 1.24.1, kept for rollback (before 1.24.2's bitrate weighting) |
+| `ytdl.ps1.bak-1.24.0` | 1.24.0, kept for rollback (before 1.24.1's estimate tuning) |
+| `ytdl.ps1.bak-1.23.0` | 1.23.0, kept for rollback (before 1.24.0's mascot face in -Doctor) |
+| `ytdl.ps1.bak-1.22.1` | 1.22.1, kept for rollback (before 1.23.0's output options, -Live, -History, -Feed) |
+| `ytdl.ps1.bak-1.22.0` | 1.22.0, kept for rollback (before 1.22.1's rate-limit fix) |
+| `ytdl.ps1.bak-1.21.1` | 1.21.1, kept for rollback (before 1.22.0's -Quality 4320/240/144 and -PoToken) |
+| `ytdl.ps1.bak-1.21.0` | 1.21.0, kept for rollback (before 1.21.1's -Keep collision fixes) |
+| `ytdl.ps1.bak-1.20.1` | 1.20.1, kept for rollback (before 1.21.0's audio formats, SponsorBlock and speed cap) |
+| `ytdl.ps1.bak-1.20.0`, `ytdl.cmd.bak-1.20.0` | 1.20.0 and its Command Prompt launcher, kept for rollback (before 1.20.1) |
+| `ytdl.ps1.bak-1.19.0` | 1.19.0, kept for rollback (before 1.20.0's queue) |
+| `ytdl.ps1.bak-1.18.2` | 1.18.2, kept for rollback (before 1.19.0's -Library) |
+| `ytdl.ps1.bak-1.18.1` | 1.18.1, kept for rollback (before 1.18.2's quality and -Precise changes) |
+| `ytdl.ps1.bak-1.18.0` | 1.18.0, kept for rollback (before 1.18.1's notification check) |
+| `ytdl.ps1.bak-1.17.2` | 1.17.2, kept for rollback (before 1.18.0's -YtdlpArgs, -Notify, -Doctor and retry wait) |
+| `ytdl.ps1.bak-1.17.1` | 1.17.1, kept for rollback (before 1.17.2's -Precise fix) |
+| `ytdl.ps1.bak-1.17.0` | 1.17.0, kept for rollback (before 1.17.1's test hook) |
+| `ytdl.ps1.bak-1.16.1` | 1.16.1, kept for rollback (before 1.17.0's progress bar) |
+| `ytdl.ps1.bak-1.16.0` | 1.16.0, kept for rollback (before the 1.16.1 exit-wait fix) |
+| `ytdl.ps1.bak-1.15.0` | 1.15.0, kept for rollback (before 1.16.0's filters, failed list, browser button, fast single-video start and pause) |
+| `ytdl.ps1.bak-1.14.0` | 1.14.0, kept for rollback (before 1.15.0's channels and subscriptions) |
+| `ytdl.ps1.bak-1.13.0` | 1.13.0, kept for rollback (before 1.14.0's schedule-based parallel estimate) |
+| `ytdl.ps1.bak-1.12.1` | 1.12.1, kept for rollback (before 1.13.0's pieces with 2 workers) |
+| `ytdl.ps1.bak-1.12.0` | 1.12.0, kept for rollback (before the 1.12.1 `-Items` fix) |
+| `ytdl.ps1.bak-1.11.0` | 1.11.0, kept for rollback (before 1.12.0's `-Fragments`) |
+| `ytdl.ps1.bak-1.10.0` | 1.10.0, kept for rollback (before 1.11.0's per-playlist client memory) |
+| `ytdl.ps1.bak-1.9.0` | 1.9.0, kept for rollback (before the 1.10.0 fast-starting yt-dlp build) |
+| `ytdl.ps1.bak-1.8.0` | 1.8.0, kept for rollback (before 1.9.0's 3 workers at every quality and the format check) |
+| `ytdl.ps1.bak-1.7.0` | 1.7.0, kept for rollback (before the 1.8.0 estimate changes) |
+| `ytdl.ps1.bak-1.6.1` | 1.6.1, kept for rollback (before the 1.7.0 speed changes) |
+| `ytdl.ps1.bak-1.6.0` | 1.6.0, kept for rollback (before the 1.6.1 parallel-ETA tuning) |
+| `ytdl.ps1.bak-1.5.0` | 1.5.0, kept for rollback (before the 1.6.0 resolution check) |
+| `ytdl.ps1.bak-1.4.2` | 1.4.2, kept for rollback (before 1.5.0's no-pause level and automatic `-Parallel 3` at ≤480p) |
+| `ytdl.ps1.bak-1.4.1` | 1.4.1, kept for rollback (before the 1.4.2 bandwidth-swing ETA changes) |
+| `ytdl.ps1.bak-1.4.0` | 1.4.0, kept for rollback (before the 1.4.1 ETA tuning) |
+| `ytdl.ps1.bak-1.3.0` | 1.3.0, kept for rollback (before 1.4.0 fast extraction / single pause) |
+| `ytdl.ps1.bak-1.2.1` | 1.2.1, kept for rollback (before 1.3.0 adaptive pacing / background size probe) |
+| `ytdl.ps1.bak-1.2.0`, `ytdl.cmd.bak-1.2.0` | 1.2.0 and its pwsh-only launcher (before 1.2.1) |
+| `ytdl.ps1.bak-1.0.0` | 1.0.0, kept for rollback (before the 1.1.0 low-res ETA tuning and the 1.2.0 fragment fix) |
+| `ytdl.ps1.bak-0.9.0` | 0.9.0, kept for rollback (before the 0.10.0 ETA rewrite) |
+
+The `.bak` files above are in `ytdl-project\backups\`.
 
 **State files ytdl creates:**
 
@@ -46,6 +92,7 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `%TEMP%\ytdl.pause`, `<Out>\.ytdl.pause`, `%TEMP%\ytdl.pauses.txt` | Pause signals (all runs / one folder) and the list of folder pauses a plain `-Resume` clears (1.16.0) |
 | `%LOCALAPPDATA%\ytdl\browser-button.json`, `browser-button.html`, `HKCU\Software\Classes\ytdl` | Browser button: saved options, the bookmark page, the link handler (1.16.0) |
 | `%LOCALAPPDATA%\ytdl\subscriptions.json` | Subscriptions: URL, `Out`, saved options, added / last sync / new count / exit code. Override the path with `YTDL_SUBSCRIPTIONS` (1.15.0) |
+| `%LOCALAPPDATA%\ytdl\pace.json` | YouTube limit guard, shared by every run and the benchmarks (mutex `Local\ytdl-pace`): breaker cooldown, recent trips and openings, the held pacing level, and the last hour's video starts signed in / out. Follows `YTDL_STATE` (1.25.0) |
 | `%LOCALAPPDATA%\ytdl\sync.log` | One line per `-Sync` start, subscription result and end (1.15.0) |
 | `%LOCALAPPDATA%\ytdl\tools.json` | Cached folders of yt-dlp/ffmpeg/deno (1.2.1) |
 | `%LOCALAPPDATA%\ytdl\update-check.json` | When yt-dlp's age was last checked (1.3.0) |
@@ -119,16 +166,32 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `-Live` | off | Record a live stream from its start, or wait for a scheduled one (checks every minute). One stream: a video link or a channel's `/live` link. Pieces off, stall watchdog off unless `-StallMinutes` is given. 1.23.0 |
 | `-History [N]` | 20 | List the last N downloads (date, height, size on disk or "deleted", title, folder); `-Match` filters titles. Recorded in `%LOCALAPPDATA%\ytdl\history.tsv` from 1.23.0 on |
 | `-Feed` / `-FeedBase <url>` | off | Subscription option: after each `-Sync`, write a podcast feed (`feed.xml`, RSS 2.0) of the files still in the folder. `-FeedBase` = the web address the folder is served at (implies `-Feed`); without it the links are `file:///`. 1.23.0 |
+| `-IgnoreCooldown` | off | Start even while the YouTube limit guard is on (1.25.0). The guard still records new limits. |
 | `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0) |
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
 
-**Exit codes:** `0` all done · `1` finished, but some videos still failed after retries · `2` stopped (`-Stop`, error loop, cookie-restart limit, or not enough disk space) · `3` another ytdl run already holds this output folder (1.2.1).
+**Exit codes:** `0` all done · `1` finished, but some videos still failed after retries · `2` stopped (`-Stop`, error loop, cookie-restart limit, or not enough disk space) · `3` another ytdl run already holds this output folder (1.2.1) · `75` YouTube limit guard: the run stopped or refused to start until the cooldown ends; re-run the same command after it (1.25.0).
 
 ---
 
 ## Changelog
 
+### 1.25.0 — YouTube limit guard (2026-11-15)
+YouTube's limits are per IP and per account, escalate when ignored (bot check, then 429, then hours-long blocks) and decay only with quiet time. Pacing used to react only inside one run, and only by slowing down. Research and sources: `docs\pacing-research-2026-11-15.md`.
+
+| Change | Detail |
+|---|---|
+| **Circuit breaker** | Opens on an HTTP 429 / "try again later", on a bot check at the slowest pacing level, or on 2 trips within 10 min (hits within 60 s count once). Cooldown is 1 h, doubling with each opening in the last 24 h, at most 24 h. A run that hits it stops with exit `75` and says when to re-run; new runs, `-Parallel` workers (checked every 10 s by the watchdog), queue drains and `-Sync` refuse to start until then. The first run after a cooldown probes one video (`--simulate`) before downloading. `-IgnoreCooldown` overrides it. `-Doctor` shows it as "limit guard". |
+| **Signal classes** | A 429 on subtitles only adds `--sleep-subtitles 10` for the rest of the run (and suggests `-SubLangs en-orig`); video downloads continue. A bot check while signed out suggests `-Browser`, once. 3 "Video unavailable" signed in suggest trying signed out (an account-level block). Video titles that contain "bot" or "rate limit" no longer count: only `ERROR`/`WARNING` lines and HTTP 429 do. |
+| **Hourly budget** | Every video start is logged machine-wide: 150 per hour signed out, 1000 signed in (community-reported thresholds, with margin). At 80 % pacing goes one level slower, once; over it the run waits until the oldest starts leave the hour. |
+| **AIMD pacing** | A 429 slows pacing by 2 levels, a bot check by 1; 25 clean videos in a row speed it up by 1, down to the start level. Saved levels (per folder and machine-wide) decay 1 level per 2 h of quiet instead of holding 24 h. |
+| **Signed-in start + jitter** | Signed in starts at level 1, or level 0 with 20 or fewer videos to fetch; signed out stays at level 3. `--sleep-requests` gets ±50 % random jitter per run, so request gaps don't repeat exactly. |
+| **Retry backoff** | yt-dlp retries back off exponentially: `--retry-sleep extractor:exp=5:300`, `http:exp=1:30`, `fragment:exp=1:20` (yours win if `-YtdlpArgs` has `--retry-sleep`). |
+| **Pace status line** | `Get-PaceStatus` prints `pace L1 \| signed in \| N of 1000 videos this hour on this PC \| clean for N video(s)` after the "To stop" line and after every step up, step down and budget step (fixed `-Sleep` shows its label instead). The breaker message adds that closing the window is fine: a run started before then stops with the same message, and the first one after checks one video first. |
+| **Benchmarks obey it** | `bench\lib-limit.ps1` (suites 5, 10, 11, 12, 13): before each run, wait out an open breaker (then probe one video) and wait until the run's videos fit the hourly budget; after it, count other tools' starts and open the breaker on their bot checks / 429s. A limited run isn't recorded and runs again once. |
+
+**Verified:** `tests\v1.25.0.ps1` 52/52 offline (breaker 1 h / 2 h / 24 h cap / no extension while open / 24 h memory; trip dedupe and 10 min count; held level decay; 7 signal lines incl. titles with "bot"; budget step at 80 %, once, wait when over, old starts leaving the hour; AIMD speed-up and floor; jitter range and `--sleep-subtitles`; lib-limit sharing ytdl's file, counting other tools, 429 opening the breaker; two real launches refused with exit 75). A run through a dead proxy showed the backoff (5, 10, 20 s) and a clean failure report. `tests\v1.24.2.ps1` 6/7 and `v1.24.1.ps1` 28/29, the misses being their version checks. Check-Ytdl: ascii, parse 7/5.1, names, case variants, on ytdl.ps1, lib-limit and the 5 suites.
 ### 1.24.2 — Size estimates follow this run's own videos (2026-11-14)
 | Change | Detail |
 |---|---|

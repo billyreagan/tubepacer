@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.24.2 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.25.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -134,6 +134,10 @@ param(
     # Above 480p, exact sizes are looked up in the background for a better ETA; this turns that off
     [switch]$NoProbe,
 
+    # 1.25.0: start even though YouTube blocked this PC recently (the limit guard's cooldown). Not advised:
+    # requests during a block are thought to extend it.
+    [switch]$IgnoreCooldown,
+
     # If yt-dlp is 7+ days old (checked at most daily), update it via winget before downloading
     [switch]$AutoUpdate,
 
@@ -264,10 +268,11 @@ param(
     [switch]$NoScan,     # worker launched by the coordinator: skip the playlist scan and ETA
     [switch]$LowResContent,  # set by the coordinator when the resolution check found <= 480p videos
     [int]$ContentHeight = 0, # ...and the height it found, so workers use that resolution's ETA priors
+    [int]$StartFloor = -1,   # 1.25.0: the coordinator's lowest pacing level (0 for a small signed-in batch)
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.24.2'
+$YtdlVersion = '1.25.0'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -774,6 +779,82 @@ main{max-width:640px;margin:0 auto;display:grid;gap:20px}h1{margin:0;font-size:1
 $stateDir  = if ($env:YTDL_STATE) { $env:YTDL_STATE } else { Join-Path $env:LOCALAPPDATA 'ytdl' }
 $linkQueueFile = Join-Path $stateDir 'queue.json'
 $runsDir   = Join-Path $stateDir 'runs'
+
+# ---- 1.25.0 limit guard: one breaker and one hourly budget for the whole PC ------------------
+# YouTube limits per IP and per account, not per folder, so every ytdl run and worker (and the
+# benchmarks, bench\lib-limit.ps1) share <state>\pace.json. Times are Unix seconds. Writes go
+# through a named mutex, so workers can't lose each other's entries.
+#   CooldownUntil  no YouTube requests before this (the breaker is open)
+#   Opens          breaker openings in the last 24 h: each doubles the next cooldown (1 h .. 24 h)
+#   Events         bot checks / rate limits in the last 24 h (two within 10 min open the breaker)
+#   ProbeNeeded    after a cooldown, check one video before a full run
+#   Level/LevelAt  the pacing level the last trip reached (decays 1 level per 2 clean hours)
+#   LogIn/LogOut   video starts in the last hour, signed in / signed out
+$globalPaceFile = Join-Path $stateDir 'pace.json'
+$breakerBaseSec = 3600; $breakerMaxSec = 86400
+$limitPattern   = 'confirm you.?re not a bot|not a bot|HTTP Error 429|Too Many Requests|rate.?limit|isn.t available, try again later'
+$limit429Pattern = '429|Too Many Requests|rate.?limit|try again later'
+# Lines that echo a title or a file name, where those words may appear without meaning anything
+$limitSkipPattern = '^\[(download\] Destination|Merger|ExtractAudio|Metadata|EmbedThumbnail|MoveFiles|Fixup\w*|info\] Writing)'
+function Get-Epoch { [double][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+function Read-GlobalPace {
+    $g = @{ Scheme = 3; CooldownUntil = 0.0; Kind = ''; ProbeNeeded = $false; Level = 0; LevelAt = 0.0; Events = @(); Opens = @(); LogIn = @(); LogOut = @() }
+    try {
+        $j = [IO.File]::ReadAllText($globalPaceFile) | ConvertFrom-Json
+        foreach ($p in $j.PSObject.Properties) { $g[$p.Name] = $p.Value }
+    } catch { }
+    foreach ($k in 'Events', 'Opens', 'LogIn', 'LogOut') { $g[$k] = @(@($g[$k]) | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ }) }
+    foreach ($k in 'CooldownUntil', 'LevelAt') { $g[$k] = [double]$g[$k] }
+    $g.Level = [int]$g.Level; $g.ProbeNeeded = [bool]$g.ProbeNeeded
+    $g
+}
+# Read, change (scriptblock gets the hashtable and now), prune, write; returns the new state.
+function Update-GlobalPace([scriptblock]$change) {
+    $m = $null; $own = $false
+    try { $m = New-Object Threading.Mutex($false, 'Local\ytdl-pace'); try { $own = $m.WaitOne(5000) } catch [Threading.AbandonedMutexException] { $own = $true } } catch { }
+    try {
+        $g = Read-GlobalPace; $now = Get-Epoch
+        $null = & $change $g $now
+        foreach ($k in 'Events', 'Opens') { $g[$k] = @($g[$k] | Where-Object { $_ -gt $now - 86400 }) }
+        foreach ($k in 'LogIn', 'LogOut') { $g[$k] = @($g[$k] | Where-Object { $_ -gt $now - 3600 } | ForEach-Object { [math]::Round($_) }) }
+        try {
+            if (-not (Test-Path -LiteralPath $stateDir)) { New-Item -ItemType Directory -Force $stateDir | Out-Null }
+            [IO.File]::WriteAllText($globalPaceFile, ($g | ConvertTo-Json -Depth 3 -Compress))
+        } catch { }
+        $g
+    } finally { if ($own) { try { $m.ReleaseMutex() } catch { } }; if ($m) { $m.Dispose() } }
+}
+function Get-BreakerLeft($g) { [math]::Max(0.0, [double]$g.CooldownUntil - (Get-Epoch)) }
+function Get-BreakerText($g) {
+    $until = [DateTimeOffset]::FromUnixTimeSeconds([int64]$g.CooldownUntil).LocalDateTime
+    $why = switch ($g.Kind) { '429' { 'a rate limit (HTTP 429)' } 'max' { 'bot checks at the slowest pacing' } 'budget' { 'the hourly budget' } default { 'repeated bot checks' } }
+    $day = if ($until.Date -ne (Get-Date).Date) { $until.ToString('ddd ') } else { '' }
+    "YouTube limit guard: no downloads until $day$($until.ToString('HH:mm')) ($([math]::Ceiling((Get-BreakerLeft $g) / 60)) min left) after $why on this PC. Starting earlier would likely extend the block (-IgnoreCooldown starts anyway). Closing this window is fine: a run started before then stops with this message, and the first one after it checks one video before the rest."
+}
+# Open the breaker. If it's already open (another worker got there first), it stays as it is.
+function Open-Breaker([string]$kind) {
+    $null = Update-GlobalPace {
+        param($g, $now)
+        if ($g.CooldownUntil -gt $now) { return }
+        $n = @($g.Opens | Where-Object { $_ -gt $now - 86400 }).Count
+        $g.CooldownUntil = $now + [math]::Min($breakerMaxSec, $breakerBaseSec * [math]::Pow(2, $n))
+        $g.Opens = @($g.Opens) + $now; $g.Kind = $kind; $g.ProbeNeeded = $true
+    }
+}
+# Record a bot check / rate limit; returns how many happened on this PC in the last 10 min.
+# Hits within 60 s of the last one are one episode (all workers see the same block at once).
+function Add-PaceEvent([string]$kind, [int]$level) {
+    $r = Update-GlobalPace {
+        param($g, $now)
+        $last = ($g.Events | Measure-Object -Maximum).Maximum
+        if (-not $last -or $now - $last -ge 60) { $g.Events = @($g.Events) + $now }
+        $g.Kind = $kind
+        $held = $g.Level - [math]::Floor(($now - $g.LevelAt) / 7200)
+        if ($level -ge $held) { $g.Level = $level; $g.LevelAt = $now }
+    }
+    $now = Get-Epoch
+    @($r.Events | Where-Object { $_ -gt $now - 600 }).Count
+}
 function Lock-Queue {
     New-Item -ItemType Directory -Force $stateDir | Out-Null
     for ($i = 0; $i -lt 100; $i++) { try { return [IO.File]::Open("$linkQueueFile.lock", 'OpenOrCreate', 'ReadWrite', 'None') } catch { Start-Sleep -Milliseconds 100 } }
@@ -821,6 +902,7 @@ function Invoke-QueueDrain {
         $env:YTDL_IN_QUEUE = '1'
         try { & $hostExe @a; $c = $LASTEXITCODE } finally { Remove-Item Env:YTDL_IN_QUEUE -ErrorAction SilentlyContinue }
         if ($c -eq 2) { $worst = 2; Microsoft.PowerShell.Utility\Write-Host "[ytdl] That download was stopped; the rest of the queue stays (ytdl -Queue)." -ForegroundColor Yellow; break }
+        if ($c -eq 75) { $worst = 75; Microsoft.PowerShell.Utility\Write-Host "[ytdl] YouTube limit guard is on; the rest of the queue stays (ytdl -Queue)." -ForegroundColor Yellow; break }   # 1.25.0
         if ($c -ne 0 -and $worst -eq 0) { $worst = 1 }
     }
     $worst
@@ -1131,6 +1213,7 @@ if ($Sync) {
         $done[$s.Url] = @{ Code = $code; New = $new }
         Add-SyncLog "$($s.Url): exit $code, $new new$(if ($removed) { ", $removed removed by retention" })"
         if ($code -eq 2) { $worst = 2; Write-Host "[ytdl] That run was stopped; remaining subscriptions skipped." -ForegroundColor Yellow; break }
+        if ($code -eq 75) { $worst = 75; Write-Host "[ytdl] YouTube limit guard is on; remaining subscriptions skipped (they'll be checked on the next sync)." -ForegroundColor Yellow; break }   # 1.25.0
         if ($code -ne 0 -and $worst -eq 0) { $worst = 1 }
     }
     if (-not $Estimate -and $done.Count) {
@@ -1149,7 +1232,7 @@ if ($Sync) {
         $bad = @($done.Keys | Where-Object { $done[$_].Code -ne 0 }).Count
         Show-Toast $(if ($worst -eq 0) { 'ytdl sync done' } else { 'ytdl sync: problems' }) ("$total new video(s) from $($done.Count) subscription(s)" + $(if ($bad) { ", $bad with errors (see ytdl -Subscriptions)" } else { '' }))
     }
-    if ($worst -ne 2) { $qc = Invoke-QueueDrain; if ($worst -eq 0 -and $qc) { $worst = $qc } }   # 1.20.0
+    if ($worst -notin 2, 75) { $qc = Invoke-QueueDrain; if ($worst -eq 0 -and $qc) { $worst = $qc } }   # 1.20.0
     Unregister-Run
     exit $worst
 }
@@ -1370,11 +1453,18 @@ if ($Doctor) {
         $st = if ($free -lt $MinFreeGB) { 'FAIL' } elseif ($free -lt [math]::Max(10, $MinFreeGB * 5)) { 'WARN' } else { 'OK' }
         Out-Check $st 'disk' ('{0:N1} GB free on {1} (runs stop below {2} GB)' -f $free, $drv, $MinFreeGB) 'free some space, or download elsewhere with -Out'
     } catch { Out-Check WARN 'disk' "can't read the free space of $Out" '' }
+    # 1.25.0: the limit guard (whole PC)
+    $gp = Read-GlobalPace
+    if ((Get-BreakerLeft $gp) -gt 0) { Out-Check FAIL 'limit guard' ((Get-BreakerText $gp) -replace '^YouTube limit guard: ', '') 'wait for that time; signing in (-Browser) can help once it has passed' }
+    elseif ($gp.ProbeNeeded) { Out-Check WARN 'limit guard' 'a YouTube block has expired; the next run checks one video before it starts' 'nothing to do' }
+    else { $nowE = Get-Epoch; $nIn = @($gp.LogIn | Where-Object { $_ -gt $nowE - 3600 }).Count; $nOut = @($gp.LogOut | Where-Object { $_ -gt $nowE - 3600 }).Count
+           Out-Check OK 'limit guard' "no YouTube block; videos started in the last hour: $nIn signed in (budget 1000), $nOut signed out (budget 150)" '' }
     if ($outExists) {
         $pf = Join-Path $Out '.ytdl-pace.json'
         if (Test-Path $pf) {
             try { $pj = Get-Content $pf -Raw | ConvertFrom-Json; $hrs = ((Get-Date) - [datetime]$pj.Updated).TotalHours
-                  if ($hrs -lt 24 -and [int]$pj.Level -gt 0) { Out-Check WARN 'pacing' ("level $($pj.Level) after a bot check {0:N0} h ago: runs here start slower until 24 h have passed" -f $hrs) 'nothing to do: it resets by itself; signing in (-Browser) helps' }
+                  $eff = [int]$pj.Level - [math]::Floor($hrs / 2)   # 1.25.0: one level less per 2 clean hours
+                  if ($eff -gt 1) { Out-Check WARN 'pacing' ("level $eff after a bot check {0:N0} h ago: runs here start slower; it drops one level per 2 hours without one" -f $hrs) 'nothing to do: it resets by itself; signing in (-Browser) helps' }
                   else { Out-Check OK 'pacing' 'no recent bot check in this folder' } } catch { Out-Check WARN 'pacing' "can't read $pf" '' }
         } else { Out-Check OK 'pacing' 'no bot check ever recorded in this folder' }
         $li = Join-Path $Out '.ytdl.lock.info'
@@ -1508,6 +1598,10 @@ $ytArgs = @(
     '--abort-on-unavailable-fragments',      # a video with missing pieces fails (and is retried) instead of saving a broken file
     '-S', $fmtSort                           # same resolution: prefer plain https over fragmented (HLS/DASH) streams
 )
+# 1.25.0: back off between yt-dlp's own retries (they used to fire back to back, adding requests to a block)
+if (@($userDlArgs) -notcontains '--retry-sleep') {
+    $ytArgs += @('--retry-sleep', 'extractor:exp=5:300', '--retry-sleep', 'http:exp=1:30', '--retry-sleep', 'fragment:exp=1:20')
+}
 
 if ($AudioOnly) {
     # 1.21.0: m4a and opus keep YouTube's own stream (yt-dlp only rewraps it when the codec already matches)
@@ -1621,21 +1715,39 @@ $paceFile   = Join-Path $Out '.ytdl-pace.json'
 $testBot = 0; [void][int]::TryParse("$env:YTDL_TEST_BOTCHECK", [ref]$testBot)
 $testBotFlag = Join-Path $Out '.ytdl-testbot'; $testBotN = 0; $testBotFired = $false
 $paceLevel  = 2
+# 1.25.0 (AIMD): the floor is where a run starts and the lowest it speeds back down to. Signed in starts
+# at L1 (0.5 s per request), not L0; a batch of 20 or fewer videos still gets L0 (set after the scan).
+$paceIdent  = if ($Browser -or $Cookies) { 'In' } else { 'Out' }
+$paceFloor  = 0
+$decayVideos = 25        # clean videos in a row before speeding up one level (within a run)
 if ($autoPace) {
-    $paceLevel = if ($Browser -or $Cookies) { 0 } else { 3 }   # unsigned: 5 s pauses, as before
+    $paceFloor = if ($paceIdent -eq 'In') { 1 } else { 3 }   # unsigned: 5 s pauses, as before
+    if ($StartFloor -ge 0) { $paceFloor = [math]::Min($paceFloor, $StartFloor) }
+    $paceLevel = $paceFloor
+    # A saved level loses one step per 2 hours since the last bot check (it used to hold for 24 h, then drop to the floor).
     if (Test-Path $paceFile) {
         try { $pf = Get-Content $paceFile -Raw | ConvertFrom-Json
               $saved = [int]$pf.Level; if (-not $pf.Scheme) { $saved++ }   # 1.3/1.4 numbering had no no-pause level
-              $saved = [math]::Min($saved, $paceLevels.Count - 1)
-              if (((Get-Date) - [datetime]$pf.Updated).TotalHours -lt 24 -and $saved -gt $paceLevel) { $paceLevel = $saved } } catch { }
+              $saved = [math]::Min($saved, $paceLevels.Count - 1) - [math]::Floor(((Get-Date) - [datetime]$pf.Updated).TotalHours / 2)
+              if ($saved -gt $paceLevel) { $paceLevel = [int]$saved } } catch { }
     }
+    # ...and so does the level the last trip on this PC reached (any folder: YouTube limits the IP, not the folder)
+    $gp0 = Read-GlobalPace
+    $held = [math]::Min($gp0.Level, $paceLevels.Count - 1) - [math]::Floor(((Get-Epoch) - $gp0.LevelAt) / 7200)
+    if ($held -gt $paceLevel) { $paceLevel = [int]$held }
 }
 function Get-PaceSleep { if ($autoPace) { $paceLevels[$script:paceLevel].S } else { $Sleep } }
 function Get-PaceReq   { if ($autoPace) { $paceLevels[$script:paceLevel].R } elseif ($Sleep -gt 0) { 1 } else { 0 } }
 function Get-PaceArgs {
-    $s = Get-PaceSleep; $r = Get-PaceReq
-    if ($s -le 0) { if ($r -gt 0) { return @('--sleep-requests', $r) }; return @() }
-    @('--sleep-interval', $s, '--max-sleep-interval', ($s * 2), '--sleep-requests', $r)
+    $s = Get-PaceSleep; $r = [double](Get-PaceReq)
+    # 1.25.0: +/-50% on the request pause, new each launch (yt-dlp's own value is fixed, which is a pattern)
+    if ($autoPace -and $r -gt 0) { $r = [math]::Round($r * (0.5 + (Get-Random -Minimum 0.0 -Maximum 1.0)), 2) }
+    $a = @()
+    if ($s -gt 0) { $a += @('--sleep-interval', $s, '--max-sleep-interval', ($s * 2)) }
+    if ($r -gt 0) { $a += @('--sleep-requests', $r.ToString([Globalization.CultureInfo]::InvariantCulture)) }
+    # 1.25.0: captions have a stricter limit of their own; after a subtitle 429, pause 10 s before each one
+    if ($subList) { $ss = if ($script:subSlow) { 10 } elseif ($s -gt 0 -or $r -gt 0) { 2 } else { 0 }; if ($ss -gt 0) { $a += @('--sleep-subtitles', $ss) } }
+    $a
 }
 function Get-PaceLabel {
     $s = Get-PaceSleep
@@ -1645,7 +1757,44 @@ function Get-PaceLabel {
         else { "level $($script:paceLevel) ($s-$($s * 2) s between videos)" } }
     elseif ($s -gt 0) { "fixed -Sleep $s" } else { 'no pauses' }
 }
+# 1.25.0: one-line pace status, at the start and after each level change
+function Get-PaceStatus {
+    $now = Get-Epoch; $n = @((Read-GlobalPace)["Log$paceIdent"] | Where-Object { $_ -gt $now - 3600 }).Count
+    $who = if ($paceIdent -eq 'In') { 'signed in' } else { 'signed out' }
+    $lv = if ($autoPace) { "L$($script:paceLevel)" } else { Get-PaceLabel }
+    "pace $lv | $who | $n of $budgetMax videos this hour on this PC | clean for $($script:cleanVids) video(s)"
+}
 function Save-PaceLevel { try { @{ Level = $script:paceLevel; Scheme = 2; Updated = (Get-Date).ToString('s') } | ConvertTo-Json | Set-Content $paceFile -Encoding ASCII } catch { } }
+
+# 1.25.0: the hourly budget (about half of yt-dlp's wiki figures: guest ~300 videos/h, account ~2000/h).
+$budgetMax = if ($paceIdent -eq 'In') { 1000 } else { 150 }
+$tb = 0; if ([int]::TryParse("$env:YTDL_TEST_BUDGET", [ref]$tb) -and $tb -gt 0) { $budgetMax = $tb }   # test hook
+$breakerOn = -not $IgnoreCooldown
+$breakerStop = $false; $budgetStepped = $false; $budgetLastId = $null; $budgetWait = 0; $budgetUsed = 0
+$cleanVids = 0; $subSlow = $false; $botAdvised = $false; $unavailN = 0; $maxTrips = 0; $paceSim = $false
+# The breaker: refuse to start while it's open; after it closes, check one video before the real run.
+if ($breakerOn) {
+    $gp = Read-GlobalPace
+    if ((Get-BreakerLeft $gp) -gt 0) {
+        Write-Host "[ytdl] $(Get-BreakerText $gp)" -ForegroundColor Yellow
+        Release-Lock; Unregister-Run; Restore-Console; exit 75
+    }
+    if ($gp.ProbeNeeded -and $Worker -eq 0 -and $Url) {
+        Write-Host "[ytdl] A YouTube block on this PC has expired; checking one video before starting..." -ForegroundColor DarkGray
+        $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # stderr lines must not terminate
+        $po = @(& $ytdlp --simulate --no-warnings --playlist-items 1 --print id @authArgs $Url 2>&1 | ForEach-Object { "$_" })
+        $ErrorActionPreference = $eap
+        $hit = @($po | Where-Object { $_ -match $limitPattern -and $_ -notmatch $limitSkipPattern })
+        if ($hit.Count) {
+            Write-LogOnly "[ytdl-event] limit probe failed: $($hit[0])"
+            Open-Breaker $(if ($hit[0] -match $limit429Pattern) { '429' } else { 'bot' })
+            Write-Host "[ytdl] Still blocked. $(Get-BreakerText (Read-GlobalPace))" -ForegroundColor Yellow
+            Release-Lock; Unregister-Run; Restore-Console; exit 75
+        }
+        [void](Update-GlobalPace { param($g, $now) $g.ProbeNeeded = $false })
+        Write-Host "[ytdl] The check passed; starting at pacing $(Get-PaceLabel)." -ForegroundColor DarkGray
+    }
+}
 
 # ---- fast extraction (1.4.0) ----------------------------------------------------------------
 # yt-dlp's default client set makes ~6 requests per video; web_embedded with HLS skipped makes ~4
@@ -2353,6 +2502,11 @@ elseif ($queue.Count -gt 0) {
     foreach ($id in $queue.Keys) { if (-not (Test-Archived $id -NoRefresh)) { [void]$eta.Pending.Add($id) } }
     $known = @($queue.Values | Where-Object { $_ -gt 0 })
     if ($known.Count) { $eta.AvgDur = ($known | Measure-Object -Average).Average }
+    # 1.25.0: a small signed-in batch (20 videos or fewer to download) starts with no pauses at all
+    if ($autoPace -and $Worker -eq 0 -and $paceIdent -eq 'In' -and $paceFloor -eq 1 -and $StartFloor -lt 0 -and $eta.Pending.Count -le 20) {
+        $paceFloor = 0
+        if ($paceLevel -eq 1) { $paceLevel = 0; Set-RunWorkers $workersN }
+    }
     # 1.9.0: the default 3 workers need 2+ videos left with playlist positions (a single video URL has
     # none). Otherwise this is a one-worker run from the start, so its estimate isn't divided by 3.
     if ($autoParallel -and $isCoordinator) {
@@ -2847,6 +3001,7 @@ if ($isCoordinator) {
     }
     if (-not $PSBoundParameters.ContainsKey('Out')) { $common += '-Out'; $common += $Out }
     if ($detectedLowRes) { $common += @('-LowResContent', '-ContentHeight', $hmax) }
+    if ($autoPace) { $common += @('-StartFloor', $paceFloor) }   # 1.25.0
 
     # Worker logs from coordinators that ended abruptly (window closed) are left in %TEMP%; drop
     # the ones whose coordinator process no longer exists.
@@ -2911,12 +3066,17 @@ if ($isCoordinator) {
         @{ Done = $dn; Total = [math]::Max($coordTotalMiB, $dn); FilesDone = [int](($workers | Measure-Object Done -Sum).Sum); FilesTotal = $total
            Speed = $barSpeed.MiBps; Paused = [bool](Test-PauseRequested) }
     }
+    $coordBreak = $false; $lastBrkCheck = [datetime]::MinValue
     try {
         $lastOverall = ''
         while ($true) {
+            # 1.25.0: no launches while the limit guard's breaker is open (a worker or another run opened it)
+            if ($breakerOn -and -not $coordBreak -and ((Get-Date) - $lastBrkCheck).TotalSeconds -ge 5) {
+                $lastBrkCheck = Get-Date; $coordBreak = (Get-BreakerLeft (Read-GlobalPace)) -gt 0
+            }
             # Hand out batches to free slots (never after a stop), at most one launch every 3 s.
             foreach ($sl in $slots) {
-                if ($batches.Count -eq 0 -or (Test-StopRequested) -or (Test-PauseRequested)) { break }   # 1.16.0: no launches while paused
+                if ($batches.Count -eq 0 -or (Test-StopRequested) -or (Test-PauseRequested) -or $coordBreak) { break }   # 1.16.0: no launches while paused
                 if ($sl.W -and -not $sl.W.Proc.HasExited) { continue }
                 if (((Get-Date) - $lastLaunch).TotalSeconds -lt $launchGap) { break }
                 $bt = $batches[0]; $batches.RemoveAt(0); Start-Batch $sl $bt
@@ -2982,7 +3142,7 @@ if ($isCoordinator) {
                     }
                 }
             }
-            if ($alive -eq 0 -and ($batches.Count -eq 0 -or (Test-StopRequested))) { break }
+            if ($alive -eq 0 -and ($batches.Count -eq 0 -or (Test-StopRequested) -or $coordBreak)) { break }
             # 1.16.0: P pauses all workers (their watchdogs suspend their yt-dlp), P or R resumes.
             if ($keysOn) {
                 try {
@@ -3022,12 +3182,12 @@ if ($isCoordinator) {
     }
 
     $codes = @($workers | ForEach-Object { $_.Proc.ExitCode })
-    $final = if ($codes -contains 2) { 2 } elseif (@($codes | Where-Object { $_ -ne 0 }).Count) { 1 } else { 0 }
+    $final = if ($codes -contains 75 -or $coordBreak) { 75 } elseif ($codes -contains 2) { 2 } elseif (@($codes | Where-Object { $_ -ne 0 }).Count) { 1 } else { 0 }
     $color = if ($final -eq 0) { 'Green' } else { 'Yellow' }
     # 1.8.0: learn the connection's total throughput from full 3+-worker runs (not stopped, 1+ GB, 5+ min:
     # start-up made a 37 s test run read 5.8 MiB/s against ~14.5 in real 22-30 min runs).
     $capSec = ((Get-Date) - $capT0).TotalSeconds
-    if ($n -ge 3 -and $final -ne 2 -and $capMiB -ge 1024 -and $capSec -ge 300 -and $limitBytes -le 0) {   # 1.24.1: not under -LimitRate
+    if ($n -ge 3 -and $final -notin 2, 75 -and $capMiB -ge 1024 -and $capSec -ge 300 -and $limitBytes -le 0) {   # 1.24.1: not under -LimitRate
         $capNow = [math]::Round($capMiB / $capSec, 2)
         try {
             $j = $null; if (Test-Path $bwGlobalFile) { $j = Get-Content $bwGlobalFile -Raw | ConvertFrom-Json }
@@ -3050,11 +3210,12 @@ if ($isCoordinator) {
         } catch { }
     }
     Write-Host "`n[ytdl] All workers finished (exit codes: $($codes -join ', '))." -ForegroundColor $color
+    if ($final -eq 75) { Write-Host "[ytdl] $(Get-BreakerText (Read-GlobalPace)) Completed videos are kept; re-run the same command after that to resume." -ForegroundColor Yellow }   # 1.25.0
     $fl = @($coordFails.Values)
     Save-FailedList $Url $fl; Show-FailedList $fl
-    Send-RunToast $final $fl.Count $(if ($final -eq 2) { 'Stopped.' } else { '' })   # 1.18.0
+    Send-RunToast $final $fl.Count $(if ($final -in 2, 75) { 'Stopped.' } else { '' })   # 1.18.0
     Release-Lock
-    if ($final -ne 2) { $qc = Invoke-QueueDrain; if ($final -eq 0 -and $qc) { $final = $qc } }   # 1.20.0
+    if ($final -notin 2, 75) { $qc = Invoke-QueueDrain; if ($final -eq 0 -and $qc) { $final = $qc } }   # 1.20.0
     Unregister-Run; Restore-Console
     exit $final
 }
@@ -3073,6 +3234,7 @@ $runState = [hashtable]::Synchronized(@{
     StopFile = $stopFile; FolderStop = $folderStop; StallMinutes = $StallMinutes; ParentPid = $PID
     Drive = $drive; MinFreeBytes = [double]($MinFreeGB * 1GB); LastDiskCheck = [datetime]::MinValue
     AutoPace = $autoPace; PaceFile = $paceFile; Level = $paceLevel; LastPaceCheck = [datetime]::MinValue
+    BreakerOn = $breakerOn; BreakerFile = $globalPaceFile; LastBreakerCheck = [datetime]::MinValue   # 1.25.0
     # 1.16.0 pause/resume
     PauseFile = $pauseFile; FolderPause = $folderPause; PauseList = $pauseList; ReadKeys = ($Worker -eq 0)
     Paused = $false; PausedAt = $null; PausedSec = 0.0; Suspended = @{}; LastSuspendScan = [datetime]::MinValue
@@ -3173,6 +3335,12 @@ $watchdog = [powershell]::Create()
             $s.LastDiskCheck = Get-Date
             $free = try { (New-Object IO.DriveInfo($s.Drive)).AvailableFreeSpace } catch { [double]::MaxValue }
             if ($free -lt $s.MinFreeBytes) { $s.Abort = 'disk'; $s.Running = $false; & $kill $s.ParentPid }
+        } elseif ($s.BreakerOn -and ((Get-Date) - $s.LastBreakerCheck).TotalSeconds -ge 10) {
+            # 1.25.0: another run or worker on this PC hit a YouTube limit and opened the breaker: stop too.
+            $s.LastBreakerCheck = Get-Date
+            $until = 0
+            try { $until = [long]([IO.File]::ReadAllText($s.BreakerFile) | ConvertFrom-Json).CooldownUntil } catch { }
+            if ($until -gt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) { $s.Abort = 'breaker'; $s.Running = $false; & $kill $s.ParentPid }
         } elseif ($s.AutoPace -and ((Get-Date) - $s.LastPaceCheck).TotalSeconds -ge 10) {
             # R7: another worker (or run) on this folder slowed down after a bot check: follow it.
             $s.LastPaceCheck = Get-Date
@@ -3192,6 +3360,26 @@ function Wait-OrStop([int]$seconds) {
         Start-Sleep -Seconds 1
     }
     return -not (Test-StopRequested)
+}
+
+# 1.25.0: count one video start against this PC's hourly budget (shared by all runs and workers).
+# Over budget: stop and wait until the oldest start leaves the hour. Near it (80%): one level slower.
+# 25 clean videos in a row: one level faster again (AIMD), down to the floor.
+function Step-Budget {
+    $id = $paceIdent
+    $g = Update-GlobalPace { param($g, $now) $g["Log$id"] = @($g["Log$id"]) + $now }
+    $log = @($g["Log$id"] | Sort-Object); $now = Get-Epoch
+    $script:budgetUsed = $log.Count; $script:cleanVids++
+    $top = $paceLevels.Count - 1
+    if ($log.Count -gt $budgetMax) {
+        $script:budgetWait = [int][math]::Max(5, [math]::Ceiling($log[$log.Count - $budgetMax] + 3600 - $now + 5))
+        $runState.Abort = 'budget'; $runState.Running = $false; & $killTree $PID
+    } elseif ($autoPace -and $log.Count -ge [math]::Ceiling(0.8 * $budgetMax) -and -not $script:budgetStepped -and $script:paceLevel -lt $top) {
+        $script:budgetStepped = $true; $script:budgetWait = 0
+        $runState.Abort = 'budget'; $runState.Running = $false; & $killTree $PID
+    } elseif ($autoPace -and $script:cleanVids -ge $decayVideos -and $script:paceLevel -gt $paceFloor) {
+        $runState.Abort = 'decay'; $runState.Running = $false; & $killTree $PID
+    }
 }
 
 # Run yt-dlp once, echoing its output live while scanning it for auth errors and error loops.
@@ -3263,11 +3451,29 @@ function Invoke-Pass([string[]]$passArgs) {
                 $runState.Abort = 'client'; $runState.Running = $false
                 & $killTree $PID
             }
-            if ($autoPace -and $script:paceLevel -lt ($paceLevels.Count - 1) -and -not $runState.Abort -and
-                $line -match "confirm you.?re not a bot|not a bot|HTTP Error 429|Too Many Requests|rate.?limit") {
-                $script:paceWas429 = ($line -match '429|Too Many Requests|rate.?limit')
-                $runState.Abort = 'pace'; $runState.Running = $false
-                & $killTree $PID
+            # 1.25.0: every limit signal is handled, at any level and with fixed pacing too (the pass loop
+            # decides: slower, or the breaker). A subtitle 429 is the stricter caption limit: slow captions only.
+            if (-not $runState.Abort -and $line -match $limitPattern -and $line -notmatch $limitSkipPattern) {
+                if ($line -match $limit429Pattern -and $line -match 'subtitle') {
+                    if (-not $script:subSlow) {
+                        $script:subSlow = $true
+                        Write-Host "[ytdl] YouTube is limiting caption downloads; captions now wait 10 s each (videos are not slowed). -SubLangs en-orig avoids the stricter limit on translated captions." -ForegroundColor Yellow
+                    }
+                } else {
+                    $script:paceWas429 = ($line -match $limit429Pattern)
+                    $script:paceSim = ($line -match 'simulated by YTDL_TEST_BOTCHECK')
+                    $runState.Abort = 'pace'; $runState.Running = $false
+                    & $killTree $PID
+                }
+            }
+            # 1.25.0: a new video starting counts against the hourly budget
+            if ($line -match '^\[youtube\] ([\w-]{11}): Downloading webpage' -and $Matches[1] -ne $script:budgetLastId) {
+                $script:budgetLastId = $Matches[1]
+                if (-not $runState.Abort) { Step-Budget }
+            }
+            # 1.25.0: "Video unavailable" again and again while signed in can mean the account is flagged
+            if (($Browser -or $Cookies) -and $line -match '^ERROR.*Video unavailable' -and ++$script:unavailN -eq 3) {
+                Write-Host "[ytdl] 3 videos were 'unavailable' while signed in. If they play in a browser, YouTube may be limiting this account: try the same command without -Browser/-Cookies." -ForegroundColor Yellow
             }
 
             # Rotated cookies: everything after this would run signed-out and get skipped, so stop
@@ -3371,6 +3577,7 @@ function Get-FragArgs { if ($script:fragOn) { @('-N', [string]$fragN) } else { @
 
 Write-Host "ytdl $YtdlVersion | Downloading to: $Out | pacing $(Get-PaceLabel)$(if ($limitBytes -gt 0 -and $Worker -eq 0) { " | at most $LimitRate/s in total" }) | $(if ($fastClient) { 'fast extraction' } else { 'default clients' })$(if ($thumbPlugin) { ' | thumbnail check' })$(if ($fragOn) { " | $fragN pieces at once" })" -ForegroundColor Cyan
 Write-Host "To stop: press Ctrl+C here, or run 'ytdl -Stop' in another terminal. To pause: press P (P again resumes), or ytdl -Pause / -Resume." -ForegroundColor DarkGray
+Write-Host "[ytdl] $(Get-PaceStatus)" -ForegroundColor DarkGray   # 1.25.0
 $script:barState = { Get-RunBarState }; Update-Bar -Force   # 1.17.0
 
 $totalPasses = 1 + [math]::Max(0, $Retries)
@@ -3414,6 +3621,9 @@ try {
             if (-not (Wait-OrStop $wait)) { $stopReason = 'Stopped by ytdl -Stop.'; break }
         }
 
+        if ($breakerOn -and (Get-BreakerLeft (Read-GlobalPace)) -gt 0) {   # 1.25.0: opened by another run during the wait
+            $stopReason = Get-BreakerText (Read-GlobalPace); $breakerStop = $true; break
+        }
         $before = Get-ArchiveCount
         $code   = Invoke-Pass ($passArgs + (Get-PaceArgs) + (Get-ClientArgs) + (Get-HelperArgs) + (Get-FragArgs))
         $added  = (Get-ArchiveCount) - $before
@@ -3441,12 +3651,54 @@ try {
             $restartWhy = "with yt-dlp's default clients"; $restartNow = $true; $pass--; continue
         }
         if ($runState.Abort -eq 'pace') {
-            Set-PaceLevel ($paceLevel + 1); Save-PaceLevel
+            # 1.25.0 (AIMD): a 429 moves up 2 levels, a bot check 1. The breaker opens on a 429 (over the
+            # budget: a short wait can't fix it), at the slowest level, or on the 2nd trip in 10 min on this PC.
+            $top = $paceLevels.Count - 1; $wasTop = $paceLevel -ge $top
             $what = if ($paceWas429) { 'YouTube is rate-limiting' } else { 'YouTube asked to confirm this is not a bot' }
+            if ($autoPace) { Set-PaceLevel ([math]::Min($top, $paceLevel + $(if ($paceWas429) { 2 } else { 1 }))); Save-PaceLevel }
+            $cleanVids = 0
+            Write-LogOnly "[ytdl-event] limit: $(if ($paceWas429) { '429' } else { 'bot' }) at level $paceLevel"
+            if ($paceIdent -eq 'Out' -and -not $paceWas429 -and -not $botAdvised) {
+                $botAdvised = $true
+                Write-Host "`n[ytdl] Signed-out bot checks are about this connection's reputation, which pacing alone may not fix. Signing in usually helps: add -Browser firefox (or chrome, edge)." -ForegroundColor Yellow
+            }
+            if ($breakerOn -and -not $paceSim) {
+                $recent = Add-PaceEvent $(if ($paceWas429) { '429' } else { 'bot' }) $paceLevel
+                if ($paceWas429 -or $wasTop -or $recent -ge 2) {
+                    Open-Breaker $(if ($paceWas429) { '429' } elseif ($wasTop) { 'max' } else { 'bot' })
+                    Write-Host "`n$what; stopped yt-dlp. Partial download is kept." -ForegroundColor Yellow
+                    $stopReason = Get-BreakerText (Read-GlobalPace); $breakerStop = $true; break
+                }
+            } elseif (($wasTop -or -not $autoPace) -and ++$maxTrips -ge 5) {
+                $stopReason = "$what at the slowest pacing, 5 times (-IgnoreCooldown). Wait an hour or more before trying again."; break
+            }
             Write-Host "`n$what; stopped yt-dlp and slowing down to pacing $(Get-PaceLabel). Partial download is kept." -ForegroundColor Yellow
+            Write-Host "[ytdl] $(Get-PaceStatus)" -ForegroundColor DarkGray
             $restartWhy  = "at pacing $(Get-PaceLabel)"
-            $restartWait = if ($paceWas429) { 30 * $paceLevel } else { 10 }
+            $restartWait = if ($wasTop -or -not $autoPace) { 60 } elseif ($paceWas429) { 30 * $paceLevel } else { 10 }
             $restartNow  = $true; $pass--; continue
+        }
+        if ($runState.Abort -eq 'breaker') {
+            Write-Host "`nAnother download on this PC hit a YouTube limit; stopping this one too. Partial download is kept." -ForegroundColor Yellow
+            $stopReason = Get-BreakerText (Read-GlobalPace); $breakerStop = $true; break
+        }
+        if ($runState.Abort -eq 'budget') {
+            if ($budgetWait -gt 0) {
+                Write-Host ("`n[ytdl] Hourly budget reached on this PC: {0} videos started in the last hour (limit {1} {2}). Waiting {3:N0} min, then continuing." -f $budgetUsed, $budgetMax, $(if ($paceIdent -eq 'In') { 'signed in' } else { 'signed out' }), ($budgetWait / 60)) -ForegroundColor Yellow
+                $restartWhy = 'after the hourly budget wait'; $restartWait = $budgetWait; $budgetWait = 0
+            } else {
+                Set-PaceLevel ($paceLevel + 1); Save-PaceLevel
+                Write-Host "`n[ytdl] $budgetUsed of $budgetMax videos used this hour on this PC; slowing down to pacing $(Get-PaceLabel) to stay under it." -ForegroundColor Yellow
+                Write-Host "[ytdl] $(Get-PaceStatus)" -ForegroundColor DarkGray
+                $restartWhy = "at pacing $(Get-PaceLabel)"; $restartWait = 2
+            }
+            $restartNow = $true; $pass--; continue
+        }
+        if ($runState.Abort -eq 'decay') {
+            Set-PaceLevel ($paceLevel - 1); Save-PaceLevel; $cleanVids = 0
+            Write-Host "`n[ytdl] $decayVideos videos in a row without a bot check; speeding up to pacing $(Get-PaceLabel)." -ForegroundColor DarkGray
+            Write-Host "[ytdl] $(Get-PaceStatus)" -ForegroundColor DarkGray
+            $restartWhy = "at pacing $(Get-PaceLabel)"; $restartWait = 1; $restartNow = $true; $pass--; continue
         }
         if ($runState.Abort -eq 'pacesync') {
             Set-PaceLevel ([math]::Min([int]$runState.NewLevel, $paceLevels.Count - 1))
@@ -3564,7 +3816,8 @@ if ($failInfo.Count) {
 }
 if ($Worker -gt 0) { foreach ($f in $failed) { Write-Host "[ytdl-fail] $($f.Id)`t$(([string]$f.Title) -replace "`t", ' ')`t$($f.Reason)" } }
 elseif (-not $Estimate) { Save-FailedList $Url $failed; Show-FailedList $failed }
-$finalMsg = if ($stopReason) { "$stopReason Completed videos are kept; re-run the same command to resume." } elseif ($code -eq 0) { 'Done.' }
+$finalMsg = if ($breakerStop) { "$stopReason Completed videos are kept; re-run the same command after that to resume." }
+            elseif ($stopReason) { "$stopReason Completed videos are kept; re-run the same command to resume." } elseif ($code -eq 0) { 'Done.' }
             elseif ($failed.Count) { "Finished with errors after $pass pass(es); the failed videos are listed above." }
             else { "Finished with errors after $pass pass(es). Check the messages above for the videos that failed; re-running the command retries only those." }
 
@@ -3572,7 +3825,7 @@ $finalColor = if ($stopReason) { 'Yellow' } elseif ($code -eq 0) { 'Green' } els
 Write-Host "`n$finalMsg" -ForegroundColor $finalColor
 if ($Worker -eq 0) { Send-RunToast $code $failed.Count $stopReason }   # 1.18.0
 Release-Lock
-if ($stopReason) { Unregister-Run; Restore-Console; exit 2 }
+if ($stopReason) { Unregister-Run; Restore-Console; exit $(if ($breakerStop) { 75 } else { 2 }) }
 $qc = Invoke-QueueDrain; if ($code -eq 0 -and $qc) { $code = $qc }   # 1.20.0
 if ($Worker -eq 0) { Unregister-Run }
 Restore-Console

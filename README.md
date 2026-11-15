@@ -9,7 +9,7 @@
 
 <!-- TODO (E3): add a short recording of a real run here (for example .github/run.gif from an actual 12-video job). Use a real capture only, never a staged one. -->
 
-tubepacer downloads YouTube videos, playlists and channels on Windows. It keeps itself under YouTube's limits: full speed when it can, and a measured step back when YouTube pushes back. It runs downloads in parallel and tells you how long a job will take before it starts. Built on [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+tubepacer downloads YouTube videos, playlists and channels on Windows. It keeps itself under YouTube's limits: full speed when it can, a measured step back when YouTube pushes back, and a full stop before a slowdown turns into a ban. It runs downloads in parallel and tells you how long a job will take before it starts. Built on [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
 [![Release](https://img.shields.io/github/v/release/billyreagan/tubepacer?style=flat&color=1d4ed8)](https://github.com/billyreagan/tubepacer/releases/latest "Release")
 [![Windows 10 | 11](https://img.shields.io/badge/Windows-10_%7C_11-16a34a?style=flat)](#get-started-in-a-minute "Platform")
@@ -24,7 +24,8 @@ tubepacer downloads YouTube videos, playlists and channels on Windows. It keeps 
 * [Get started in a minute](#get-started-in-a-minute)
 * [What tubepacer does that others don't](#what-tubepacer-does-that-others-dont)
 * [Recipes](#recipes)
-* [How pacing and recovery work](#how-pacing-and-recovery-work)
+* [How pacing works](#how-pacing-works)
+* [How recovery works](#how-recovery-works)
 * [Options](#options)
 * [Files and folders](#files-and-folders)
 * [Troubleshooting](#troubleshooting)
@@ -35,7 +36,7 @@ tubepacer downloads YouTube videos, playlists and channels on Windows. It keeps 
 
 YouTube slows down and bot-checks anyone who downloads a lot at once. The usual answer is a fixed sleep between videos, which wastes time on every video, whether YouTube was pushing back or not.
 
-tubepacer runs at full speed while you are signed in and steps back only when YouTube pushes back. All parallel workers share one pace, so one bot check slows the whole run instead of each worker learning it separately.
+tubepacer runs at full speed while you are signed in, steps back only when YouTube pushes back, and eases back to speed once it stops. All runs and parallel workers on the PC share one hourly budget and one pace, so one bot check slows everything instead of each worker learning it separately. If YouTube keeps pushing, a circuit breaker stops all downloads for an hour instead of digging the hole deeper.
 
 Pacing works by asking YouTube less often, not by hiding. tubepacer doesn't rotate proxies or IP addresses, fake browser fingerprints, or cycle cookies across accounts.
 
@@ -97,7 +98,7 @@ Measured on one Windows PC and home connection; every run, script and raw result
 
 | | tubepacer | Others |
 |---|---|---|
-| **Stays under YouTube's limits.** Full speed while signed in, steps back only when YouTube pushes back; all workers share one pace. | 0 bot checks in 208 videos, signed in (E5–E6); 3.3× faster than yt-dlp's fixed sleeps on the same 6 videos (E5) | Fixed or random sleeps (yt-dlp `-t sleep`, ytdl-sub); adaptive pacing not documented |
+| **Stays under YouTube's limits.** Shared hourly budget; steps back on a bot check, eases back after clean videos; a circuit breaker stops before a block becomes a ban ([how](#how-pacing-works)). | 0 bot checks in 208 videos, signed in (E5–E6); 3.3× faster than yt-dlp's fixed sleeps on the same 6 videos (E5) | Fixed or random sleeps (yt-dlp `-t sleep`, ytdl-sub); adaptive pacing not documented |
 | **Size and finish time before the first byte.** | 50 videos: count, size and ETA in 7.2 s (E6E, replicated in R6E) | yt-dlp needs 153 s for sizes alone; whole-run ETA not documented |
 | **A finish time that stays honest.** | Median 20.5 s off across 167 printed estimates (E7) | Per-file ETA only |
 | **Recovers when sign-in cookies rotate.** | Downloading again in a median 1.6 s; all 3 rotations recovered (E10) | Cookies read once at start |
@@ -154,13 +155,41 @@ ytdl "https://www.youtube.com/watch?v=VIDEO_ID" -Add
 ytdl -Queue
 ```
 
-## How pacing and recovery work
+## How pacing works
+
+Pacing asks YouTube less often. It doesn't hide. It has three parts, and all ytdl runs and workers on the PC share them through `%LOCALAPPDATA%\ytdl\pace.json`, because YouTube limits the IP address and the account, not the folder.
+
+**Budget.** A shared one-hour log of videos started. The limit is about half of the figures in yt-dlp's wiki: 150 videos an hour signed out and 1,000 signed in. At 80% of the limit the run slows down one level. Over the limit, it waits until the oldest start drops out of the hour, then carries on.
+
+**Steps.** There are six levels, from L0 (no pauses) to L5 (20–40 s between videos, 3 s before each request). A bot check moves the run up one level and a 429 moves it up two. All parallel workers follow the slowest. After 25 videos in a row without a bot check, the run comes down one level, but never below its starting level: L1 signed in (L0 for 20 videos or fewer) and L3 signed out. A step-back is saved and loses one level for every two hours without a bot check, so the next run starts where it should.
+
+**Breaker.** A 429, a bot check at L5, or a second bot check within 10 minutes on this PC stops every run on the PC for one hour. Each repeat within 24 hours doubles the pause, up to 24 hours. While the breaker is open, new runs print the time it closes and exit (code 75) without asking YouTube anything, so closing the window is fine. The first run after it checks one video before starting the rest, at the level that was held.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/pacing-dark.svg">
+  <img alt="Schematic of the pacing level over time. A fixed 5 s sleep stays flat. 1.24 climbs one level per bot check and stays at L5. 1.25 steps up after a bot check, steps down after 25 clean videos, stops for a 1 hour cooldown after a 429, checks one video, then resumes and steps down again." src=".github/pacing-light.svg" width="640">
+</picture>
+
+*Schematic, not a measurement.*
+
+It also tells YouTube's signals apart:
+
+| Signal | What it usually means | What tubepacer does |
+|---|---|---|
+| HTTP 429, or "isn't available, try again later" | Over YouTube's limit | Up two levels and opens the breaker |
+| "Confirm you're not a bot", signed out | The connection's reputation | Up one level, and suggests `-Browser` |
+| "Video unavailable" three times, signed in | The account may be limited | Suggests trying without `-Browser`/`-Cookies` |
+| 429 on captions only | Captions have a stricter limit | Captions wait 10 s each; videos are not slowed |
+
+yt-dlp's own retries back off too (`--retry-sleep`: extractor 5–300 s, http 1–30 s, fragment 1–20 s, exponential) instead of firing back to back. `ytdl -Doctor` shows the breaker, this hour's budget and the folder's saved level. `-Sleep N` turns adaptive pacing off and uses a fixed pause, and `-IgnoreCooldown` starts while the breaker is open, which isn't advised. The full design, with sources, is in [docs/pacing.md](docs/pacing.md).
+
+## How recovery works
 
 ```mermaid
 flowchart LR
-    A[Download at full speed] --> B{YouTube event?}
+    A[Download] --> B{YouTube event?}
     B -- no --> A
-    B -- bot check --> C[Step back: all workers slow down]
+    B -- bot check or 429 --> C[Pacing: see How pacing works]
     B -- cookies rotated --> D[Restart with fresh browser cookies]
     B -- silent 360p reply --> E[Ask for the formats again]
     B -- fragment 404 loop --> F[Fetch fresh stream URLs]
@@ -173,7 +202,7 @@ flowchart LR
     class C,D,E,F,G fix
 ```
 
-A step back lasts for the rest of the run. It is saved in `<Out>\.ytdl-pace.json`, so a run started within 24 hours begins at the same pace; after that, runs start at their usual pace again. Each recovery has a limit (`-CookieRestarts`, `-FragmentRestarts`, `-Retries`, `-MaxErrors`), so a run that keeps failing stops instead of looping.
+Each recovery has a limit (`-CookieRestarts`, `-FragmentRestarts`, `-Retries`, `-MaxErrors`), so a run that keeps failing stops instead of looping.
 
 ## Options
 
@@ -225,6 +254,7 @@ Option | What it does | Default
 `-Browser NAME` | Use your signed-in YouTube session from firefox, chrome, edge, brave, opera, vivaldi or chromium |
 `-Cookies FILE` | Or: an exported cookies.txt (Netscape format) |
 `-Sleep SECONDS` | Pause between videos, randomized up to 2x. -1 = adaptive pacing, 0 = none | -1
+`-IgnoreCooldown` | Start even while the limit guard's breaker is open after a YouTube block. Not advised: requests during a block are thought to extend it | off
 `-NoFastClient` | Use yt-dlp's default YouTube clients instead of tubepacer's faster single-client extraction |
 `-PoToken` | Get YouTube PO tokens from the bgutil provider, installed on first use (needs deno). Mainly for signed-out runs |
 
@@ -339,6 +369,8 @@ Path|Holds
 `%LOCALAPPDATA%\ytdl\queue.json`|Links waiting for the running download
 `%LOCALAPPDATA%\ytdl\tools.json`|Where yt-dlp, ffmpeg and deno were found
 `%LOCALAPPDATA%\ytdl\history.tsv`|Every finished download, for `-History` (from 1.23.0 on)
+`%LOCALAPPDATA%\ytdl\pace.json`|The limit guard, shared by every run on the PC: breaker, hourly budget, recent bot checks (from 1.25.0 on)
+`<Out>\<Folder>\.ytdl-pace.json`|This folder's saved pacing level after a bot check
 
 With `-Library`, files follow the media-server convention, one show per channel and one season per upload year:
 

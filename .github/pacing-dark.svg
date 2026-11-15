@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 290" width="640" height="290" role="img" aria-labelledby="t d">
+<title id="t">tubepacer pacing level over time (schematic)</title>
+<desc id="d">Schematic, not a measurement. A fixed 5 s sleep stays at one level. 1.24 climbs one level per bot check and stays at the slowest level. 1.25 steps up after a bot check, steps back down after 25 clean videos, stops completely for a 1 hour cooldown after a 429, checks one video, resumes and keeps stepping down.</desc>
+<rect width="640" height="290" rx="10" fill="#0b1726"/>
+<g font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="10" fill="#94a3b8">
+  <g stroke="#1f3550" stroke-width="1">
+    <line x1="60" y1="210" x2="610" y2="210"/><line x1="60" y1="174" x2="610" y2="174"/><line x1="60" y1="138" x2="610" y2="138"/>
+    <line x1="60" y1="102" x2="610" y2="102"/><line x1="60" y1="66" x2="610" y2="66"/><line x1="60" y1="30" x2="610" y2="30"/>
+  </g>
+  <text x="8" y="213">L0 0 s</text><text x="8" y="177">L1 0 s</text><text x="8" y="141">L2 3 s</text>
+  <text x="8" y="105">L3 5 s</text><text x="8" y="69">L4 10 s</text><text x="8" y="33">L5 20 s</text>
+  <text x="60" y="228">time</text>
+</g>
+<rect x="243.3" y="24" width="275" height="190" fill="#FF2EA0" fill-opacity="0.16"/>
+<text x="381" y="168" text-anchor="middle" font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="11" fill="#FF2EA0">1.25 breaker open: 1 h cooldown</text>
+<text x="381" y="183" text-anchor="middle" font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="10" fill="#94a3b8">no requests at all</text>
+<g stroke="#94a3b8" stroke-dasharray="2 3" stroke-width="1">
+  <line x1="151.7" y1="24" x2="151.7" y2="214"/><line x1="243.3" y1="24" x2="243.3" y2="214"/><line x1="518.3" y1="24" x2="518.3" y2="214"/>
+</g>
+<g font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="10" fill="#f8fafc">
+  <text x="151.7" y="18" text-anchor="middle">bot check</text><text x="243.3" y="18" text-anchor="middle">429</text>
+  <text x="518.3" y="18" text-anchor="middle">probe ok</text>
+</g>
+<line x1="60" y1="102" x2="610" y2="102" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
+<path d="M60,210 H151.7 V174 H243.3 V138 H280 V102 H316.7 V66 H353.3 V30 H610" stroke="#60a5fa" stroke-width="2.5" fill="none"/>
+<path d="M60,174 H151.7 V138 H206.7 V174 H243.3" stroke="#FF2EA0" stroke-width="3" fill="none"/>
+<path d="M518.3,102 H587 V138 H610" stroke="#FF2EA0" stroke-width="3" fill="none"/>
+<g font-family="Cascadia Code, Consolas, Menlo, monospace" font-size="9.5" fill="#94a3b8">
+  <text x="179" y="132" text-anchor="middle">25 clean</text><text x="552" y="96" text-anchor="middle">25 clean</text>
+</g>
+<g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#f8fafc">
+  <rect x="60" y="244" width="14" height="3" fill="#94a3b8"/><text x="80" y="249">fixed 5 s sleep</text>
+  <rect x="190" y="244" width="14" height="3" fill="#60a5fa"/><text x="210" y="249">1.24: climbs, stays at L5</text>
+  <rect x="390" y="244" width="14" height="3" fill="#FF2EA0"/><text x="410" y="249">1.25: steps back, recovers, full stop</text>
+</g>
+<text x="60" y="274" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#94a3b8">Schematic, not a measurement. Levels as shipped in 1.25.0, signed in.</text>
+</svg>
