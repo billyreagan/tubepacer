@@ -205,6 +205,13 @@ Option | What it does | Default
 `-Fast360` | With `-Quality 360`: YouTube's combined H.264/AAC stream, for players without AV1 |
 `-Subs` | Download English and auto-generated subtitles and embed them |
 `-SponsorBlock MODE` | `mark`: add chapters at sponsor, intro and self-promotion segments; `remove`: cut them |
+`-SubLangs LANGS` | Subtitle languages to embed, comma-separated (`all` = every language). Implies `-Subs` |
+`-LiveChat` | Save the live-chat replay as a .json next to the video |
+`-Container mp4\|mkv\|webm` | Container of the merged file (webm falls back to mkv when the streams don't fit) | mp4
+`-Codec auto\|h264\|vp9\|av1` | Preferred video codec at the chosen height | auto
+`-Section "1:00-2:30"` | Download only that part of one video (comma-separated for several), cut exactly |
+`-SplitChapters` | Also write one file per chapter, in a folder named after the video |
+`-Live` | Record a live stream from its start, or wait for a scheduled one. One stream: a video link or a channel's `/live` link |
 
 </details>
 
@@ -264,6 +271,7 @@ Option | What it does | Default
 `-At HH:MM` | Time of day for `-Schedule` | 03:00
 `-Keep N` | After each `-Sync`, delete this subscription's oldest videos beyond the newest N |
 `-KeepDays N` | After each `-Sync`, delete this subscription's videos uploaded more than N days ago |
+`-Feed` / `-FeedBase URL` | After each `-Sync`, write a podcast feed (`feed.xml`) of the files still in the folder. `-FeedBase` is the web address the folder is served at; without it the links are `file:///` |
 
 > [!WARNING]
 > `-Keep` and `-KeepDays` delete files. They only touch files tubepacer downloaded for that subscription, and the archive stops deleted videos from downloading again.
@@ -313,12 +321,14 @@ Option | What it does | Default
 `-Library jellyfin\|plex` | Lay files out as seasons and episodes for a media server, with posters; jellyfin also gets an `.nfo` per episode |
 `-NoMetadata` | Don't embed title, date and uploader tags (saves about 1 s per video) |
 `-NoThumbnail` | Don't embed the thumbnail as cover art |
+`-Template "%(id)s - %(title)s"` | yt-dlp output template for the file name only; the folder is still tubepacer's | tubepacer's name
+`-History [N]` | List the last N downloads (date, height, size or "deleted", title, folder); `-Match` filters titles | 20
 
 </details>
 
 ## Files and folders
 
-Downloads go to `<Out>\<Folder>\`, where `<Folder>` is the playlist or channel title. tubepacer names the files itself, so yt-dlp's `-o` is refused; use `-Folder` or `-Library` instead. The data folder is named after the command, `ytdl`.
+Downloads go to `<Out>\<Folder>\`, where `<Folder>` is the playlist or channel title. tubepacer names the files itself, so yt-dlp's `-o` is refused; use `-Template` for the file name, `-Folder` or `-Library` for the folder. The data folder is named after the command, `ytdl`.
 
 Path|Holds
 :---|:---
@@ -326,6 +336,7 @@ Path|Holds
 `%LOCALAPPDATA%\ytdl\subscriptions.json`|Subscriptions and their saved options
 `%LOCALAPPDATA%\ytdl\queue.json`|Links waiting for the running download
 `%LOCALAPPDATA%\ytdl\tools.json`|Where yt-dlp, ffmpeg and deno were found
+`%LOCALAPPDATA%\ytdl\history.tsv`|Every finished download, for `-History` (from 1.23.0 on)
 
 With `-Library`, files follow the media-server convention, one show per channel and one season per upload year:
 

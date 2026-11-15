@@ -1,10 +1,10 @@
-# ytdl 1.22.1 — Changelog & Logic Notes
+# ytdl 1.23.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.22.1 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.23.0 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -109,6 +109,16 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `-SponsorBlock mark/remove` | — | Chapters at SponsorBlock segments, or cut sponsor/self-promo/interaction segments out (1.21.0) |
 | `-LimitRate 5M` | — | Cap the whole run's speed; split across the downloads at once, pieces off (1.21.0) |
 | `-PoToken` | off | Fetch YouTube PO tokens through the bgutil provider (yt-dlp plugin + a local server on deno, installed into `%LOCALAPPDATA%\ytdl\pot` on first use). Mainly for signed-out runs (1.22.0) |
+| `-SubLangs en,de` | — | Subtitle languages to embed (implies `-Subs`; `all` = every language). 1.23.0 |
+| `-LiveChat` | off | Save the live-chat replay as a .json next to the video (never embedded). 1.23.0 |
+| `-Template "%(id)s - %(title)s"` | ytdl's name | yt-dlp output template for the file name only; the folder is still ytdl's (`-Folder`). 1.23.0 |
+| `-Container mp4\|mkv\|webm` | `mp4` | Container of the merged file (webm falls back to mkv when the streams don't fit). 1.23.0 |
+| `-Codec auto\|h264\|vp9\|av1` | `auto` | Preferred video codec at the chosen height. 1.23.0 |
+| `-Section "1:00-2:30"` | — | Download only that part of one video (comma-separated for several); exact cuts; own archive, so the whole video can still be downloaded. 1.23.0 |
+| `-SplitChapters` | off | Also write one file per chapter, in a folder named after the video. 1.23.0 |
+| `-Live` | off | Record a live stream from its start, or wait for a scheduled one (checks every minute). One stream: a video link or a channel's `/live` link. Pieces off, stall watchdog off unless `-StallMinutes` is given. 1.23.0 |
+| `-History [N]` | 20 | List the last N downloads (date, height, size on disk or "deleted", title, folder); `-Match` filters titles. Recorded in `%LOCALAPPDATA%\ytdl\history.tsv` from 1.23.0 on |
+| `-Feed` / `-FeedBase <url>` | off | Subscription option: after each `-Sync`, write a podcast feed (`feed.xml`, RSS 2.0) of the files still in the folder. `-FeedBase` = the web address the folder is served at (implies `-Feed`); without it the links are `file:///`. 1.23.0 |
 | `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0) |
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
@@ -119,6 +129,17 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.23.0 — Output options, `-Live`, `-History`, podcast feeds (2026-11-14)
+| Change | Detail |
+|---|---|
+| **Output options** | `-SubLangs`, `-LiveChat`, `-Template`, `-Container`, `-Codec`, `-Section`, `-SplitChapters`. All are saved with `-Subscribe` (except `-Section`: one video). Each lifts the matching `-YtdlpArgs` refusal, which now names the new option |
+| **`-Section`** | `--download-sections` per range plus `--force-keyframes-at-cuts` (exact cut points). One video only; the clip gets its own archive (`.ytdl-archive-clip <times>.txt`) and the times in its name. Pieces off, no size ETA |
+| **`-Live`** | `--live-from-start --wait-for-video 60`, `--skip-unavailable-fragments` instead of `--abort-on-unavailable-fragments` (a stream drops pieces now and then). One worker, pieces off, no size ETA, stall watchdog off unless `-StallMinutes` is given (waiting prints nothing). Refuses playlists, channel tabs and `-Section` |
+| **`-History`** | Every finished file appends `unix time, id, height, path, title` to `%LOCALAPPDATA%\ytdl\history.tsv` (yt-dlp `--print-to-file after_move`; `%` in the path escaped). `ytdl -History [N] [-Match text]` lists the newest N; size is read from the disk, so deleted files show as "deleted" |
+| **`-Feed` / `-FeedBase`** | Subscription options. After retention, `-Sync` writes `feed.xml` in the subscription's folder from its file list: files that still exist, newest upload first, title without `[id]`, guid `yt:<id>`, enclosure with size and MIME type. `-FeedBase http://host/path` builds the links from the file's path inside the folder (URL-escaped); without it they are `file:///`. Written atomically (via .tmp) |
+| **Includes 1.22.1** | The rate-limit fix (rate limits are transient, not "won't fix itself") is in this version too |
+
+**Verified:** `tests\v1.23.0.ps1` part A 23/23 (offline): refusals for -Section, -Template, -YtdlpArgs, -Container, -Codec, -Live (with -Section, playlist, channel tab), -Feed without -Subscribe, non-http -FeedBase; -History from a fake history.tsv (sizes, deleted, audio, -Match, N); Write-SubFeed (loaded by AST) on a fake folder: valid XML, 2 of 3 episodes (one deleted), newest first, escaped FeedBase links, MIME types, file:/// without FeedBase, off without -Feed. yt-dlp's history line checked on a local file (`--enable-file-urls`) in a folder with `%` in its name. Part B (online, 360p or less): pending (released before it, by the user's choice, while YouTube rate-limited the test account). -Live on a real stream: pending, same reason. Check-Ytdl: ascii, parse 7/5.1, names ok.
 ### 1.22.1 — YouTube's rate limit is no longer "won't fix itself" (2026-11-14)
 | Change | Detail |
 |---|---|

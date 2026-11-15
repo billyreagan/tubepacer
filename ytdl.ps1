@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.22.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.23.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -58,6 +58,36 @@ param(
 
     # Download subtitles (English + auto-generated) and embed them
     [switch]$Subs,
+
+    # 1.23.0: subtitle languages (implies -Subs): yt-dlp language codes or patterns, comma-separated
+    # (en,de or 'en.*,pt-BR'), or all
+    [string]$SubLangs,
+
+    # 1.23.0: also save a past live stream's chat replay (.live_chat.json next to the video)
+    [switch]$LiveChat,
+
+    # 1.23.0: file name template from yt-dlp fields, inside the folder ytdl picks; .%(ext)s is added when missing.
+    # E.g. '%(upload_date>%Y-%m-%d)s %(title)s [%(id)s]'. Not with -Library (that layout names the files).
+    [string]$Template,
+
+    # 1.23.0: container. mp4 (the default; plays everywhere), mkv (takes any codec), webm (VP9/AV1 with Opus;
+    # mkv when a video has no webm streams). With webm the thumbnail is saved next to the file, not inside.
+    [ValidateSet('mp4', 'mkv', 'webm')] [string]$Container,
+
+    # 1.23.0: preferred video codec at the chosen height. auto = yt-dlp's order; h264 plays on everything
+    # (YouTube offers it up to 1080p, so higher -Quality still gets VP9/AV1); vp9; av1 (smallest files)
+    [ValidateSet('auto', 'h264', 'vp9', 'av1')] [string]$Codec,
+
+    # 1.23.0: download only these parts of one video: '1:00-2:30', or several: '0:10-0:40,5:00-6:00'
+    # (inf = to the end). A video link only; clips have their own archive, so the whole video can still come later.
+    [string]$Section,
+
+    # 1.23.0: also split the video into one file per chapter, in a folder named after the video
+    [switch]$SplitChapters,
+
+    # 1.23.0: record a live stream from its start (not from the moment you join). A video link or a channel's
+    # /live link; an upcoming stream is waited for (checked every minute). One download at a time, no ETA.
+    [switch]$Live,
 
     # Only download playlist items in this range, e.g. "1-10" or "3,5,7"
     # (1.12.1: a list too: -Items 109,172 unquoted is an array in PowerShell; it used to fail to bind)
@@ -136,6 +166,12 @@ param(
     [string]$Schedule,
     # Time of day for -Schedule, 24-hour HH:mm
     [string]$At = '03:00',
+    # 1.23.0: with -Subscribe, write a podcast feed (feed.xml in the subscription's folder) after each -Sync.
+    # Enclosures point at the local files, or at -FeedBase + the file's path inside the folder (for a web server).
+    [switch]$Feed,
+    [string]$FeedBase,
+    # 1.23.0: list the last downloads (20, or ytdl -History 50): date, height, size, title, folder. -Match filters titles.
+    [switch]$History,
 
     # 1.16.0 filters (any run; saved with -Subscribe): skip videos shorter or longer than this many
     # minutes, keep only titles matching -Match / not matching -Exclude (regex, case-insensitive),
@@ -231,7 +267,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.22.1'
+$YtdlVersion = '1.23.0'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -338,8 +374,11 @@ if ($YtdlpArgs) {
     # Case matters: -s and -S, -j and -J, -o and -O are different yt-dlp options (a hashtable would merge them)
     $managed = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
     foreach ($p in @(
-        @('-o', '-Folder (ytdl names the files)'),
-        @('--output', '-Folder (ytdl names the files)'),
+        @('-o', '-Template (file name) or -Folder'),
+        @('--output', '-Template (file name) or -Folder'),
+        @('--sub-langs', '-SubLangs'),
+        @('--download-sections', '-Section'),
+        @('--split-chapters', '-SplitChapters'),
         @('-P', '-Out'),
         @('--paths', '-Out'),
         @('--download-archive', 'nothing (ytdl keeps .ytdl-archive.txt in the folder)'),
@@ -348,9 +387,10 @@ if ($YtdlpArgs) {
         @('--batch-file', 'one link per run, or -Subscribe'),
         @('-f', '-Quality or -AudioOnly'),
         @('--format', '-Quality or -AudioOnly'),
-        @('-S', '-Quality'),
-        @('--format-sort', '-Quality'),
-        @('--merge-output-format', 'nothing (ytdl saves mp4)'),
+        @('-S', '-Quality and -Codec'),
+        @('--format-sort', '-Quality and -Codec'),
+        @('--merge-output-format', '-Container'),
+        @('--remux-video', '-Container'),
         @('-x', '-AudioOnly'),
         @('--extract-audio', '-AudioOnly'),
         @('--audio-format', '-AudioOnly'),
@@ -418,6 +458,41 @@ if ($YtdlpArgs) {
         if ($opt -in '-r', '--limit-rate' -and $Worker -eq 0) { Write-Host "[ytdl] Note: yt-dlp applies $opt to each stream it downloads, and ytdl runs several (videos at once, each in pieces), so the total can be a few times higher. For a cap on the total use -LimitRate instead." -ForegroundColor DarkGray }
     }
 }
+
+# 1.23.0 -Section: checked before anything starts. One video only (a playlist would cut every video at the same
+# times). Clips keep their own archive per set of times, so the same clip isn't fetched twice and the whole
+# video (the normal archive) can still be downloaded later.
+$archName = '.ytdl-archive.txt'; $clipTag = ''
+if ($Section) {
+    $timeRx = '(\d+(:\d{1,2}){0,2}(\.\d+)?)'
+    $parts = @($Section -split '\s*,\s*' | Where-Object { $_ })
+    foreach ($sp in $parts) {
+        if ($sp -notmatch "^$timeRx-($timeRx|inf)$") { Write-Host "[ytdl] -Section: '$sp' isn't a time range. Examples: 1:00-2:30, 0:10-0:40,5:00-6:00, 45:00-inf" -ForegroundColor Red; exit 1 }
+    }
+    if ($Url -match '[?&]list=' -or $Url -notmatch '(?:youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|live/|embed/)|youtu\.be/)[\w-]{11}') {
+        Write-Host "[ytdl] -Section works on one video link (watch?v=..., youtu.be/..., shorts/...), not a playlist or channel." -ForegroundColor Red; exit 1
+    }
+    $clipTag = ($parts -join ' + ') -replace ':', '.'
+    $archName = ".ytdl-archive-clip $clipTag.txt"
+}
+# 1.23.0 -Live: one stream (a video link, or a channel's /live link, which points at its current stream)
+if ($Live) {
+    if ($Section) { Write-Host "[ytdl] -Live and -Section don't go together: record the stream first, then cut a part with -Section once it's a normal video." -ForegroundColor Red; exit 1 }
+    if ($Url -match '[?&]list=' -or ($Url -notmatch '(?:youtube\.com/(?:watch\?(?:[^#]*&)?v=|shorts/|live/|embed/)|youtu\.be/)[\w-]{11}' -and $Url -notmatch 'youtube\.com/(@[^/?#]+|channel/[^/?#]+|c/[^/?#]+|user/[^/?#]+)/live/?(?:[?#].*)?$')) {
+        Write-Host "[ytdl] -Live works on one stream: a video link (watch?v=..., youtube.com/live/...) or a channel's /live link (youtube.com/@name/live)." -ForegroundColor Red; exit 1
+    }
+    # waiting for a scheduled stream prints nothing for a long time; don't let the stall watchdog kill it
+    if (-not $PSBoundParameters.ContainsKey('StallMinutes')) { $StallMinutes = 0 }
+    if ($Worker -eq 0) { $Parallel = 1; $PSBoundParameters['Parallel'] = 1 }
+}
+# 1.23.0 -Feed / -FeedBase: subscription options
+if (($Feed -or $FeedBase) -and -not $Subscribe -and -not $Worker -and -not $FileList) {
+    Write-Host "[ytdl] -Feed is a subscription option: ytdl <channel or playlist url> -Subscribe -Feed [-FeedBase https://...]. The feed is written after each ytdl -Sync." -ForegroundColor Red; exit 1
+}
+if ($FeedBase -and $FeedBase -notmatch '^https?://[^\s]+$') { Write-Host "[ytdl] -FeedBase must be an http(s) URL, e.g. http://192.168.1.5:8080/podcasts/mychannel" -ForegroundColor Red; exit 1 }
+if ($FeedBase -and $Subscribe) { $Feed = [switch]$true; $PSBoundParameters['Feed'] = [switch]$true }
+# 1.23.0 -Template: no folder parts (ytdl picks the folder; -Folder names it)
+if ($Template -and $Template -match '[\\/]') { Write-Host "[ytdl] -Template names the file only; use -Folder for the folder (no / or \ in the template)." -ForegroundColor Red; exit 1 }
 
 # ---- 1.18.0: Windows notifications ------------------------------------------------------------------------
 # PowerShell 7 can't load Windows' toast API, so a hidden Windows PowerShell 5.1 shows it (fire and forget).
@@ -538,9 +613,10 @@ $subTask = if ($env:YTDL_TASKNAME) { $env:YTDL_TASKNAME } else { 'ytdl sync' }
 $subOptNames = @('Folder', 'Quality', 'AudioOnly', 'Subs', 'Items', 'Browser', 'Cookies', 'Parallel', 'Fragments',
                  'NoThumbnail', 'NoMetadata', 'Fast360', 'NoFastClient', 'Retries', 'MinFreeGB', 'Sleep',
                  'MinMinutes', 'MaxMinutes', 'Match', 'Exclude', 'After', 'Keep', 'KeepDays',   # 1.16.0: filters, retention
-                 'YtdlpArgs', 'Library', 'AudioFormat', 'SponsorBlock', 'LimitRate', 'PoToken')   # 1.18.0, 1.19.0, 1.21.0, 1.22.0
+                 'YtdlpArgs', 'Library', 'AudioFormat', 'SponsorBlock', 'LimitRate', 'PoToken',   # 1.18.0, 1.19.0, 1.21.0, 1.22.0
+                 'SubLangs', 'LiveChat', 'Template', 'Container', 'Codec', 'SplitChapters', 'Feed', 'FeedBase')   # 1.23.0 (not -Section, -Live: one video)
 # 1.16.0: options that -Sync applies itself after the run, so they aren't passed to the run
-$subSyncOnly = @('Keep', 'KeepDays')
+$subSyncOnly = @('Keep', 'KeepDays', 'Feed', 'FeedBase')   # 1.23.0: the feed too
 # The file where a subscription's runs record what they downloaded (for -Keep / -KeepDays)
 function Get-SubFileList($s) {
     $h = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$s.Url))).Replace('-', '').Substring(0, 10)
@@ -749,6 +825,35 @@ function Invoke-QueueDrain {
     }
     $worst
 }
+# ---- 1.23.0: -History ------------------------------------------------------------------------------
+# Every finished file adds "unix time<TAB>id<TAB>height<TAB>path<TAB>title" to %LOCALAPPDATA%\ytdl\history.tsv
+# (yt-dlp --print-to-file after the move, set below). -History shows the newest; size comes from the disk.
+$historyFile = Join-Path $stateDir 'history.tsv'
+if ($History) {
+    $want = if ($Url -match '^\d+$') { [int]$Url } else { 20 }
+    if (-not (Test-Path -LiteralPath $historyFile)) { Write-Host "[ytdl] No history yet. Downloads from ytdl 1.23.0 on are listed here." -ForegroundColor DarkGray; exit 0 }
+    $rows = foreach ($l in [IO.File]::ReadAllLines($historyFile)) {
+        $p = $l -split "`t", 5
+        if ($p.Count -lt 5 -or $p[0] -notmatch '^\d+$') { continue }
+        if ($Match -and $p[4] -notmatch $Match) { continue }
+        [pscustomobject]@{ T = [long]$p[0]; Id = $p[1]; H = $p[2]; Path = $p[3]; Title = $p[4] }
+    }
+    $rows = @($rows | Sort-Object T | Select-Object -Last $want)
+    if (-not $rows.Count) { Write-Host "[ytdl] Nothing in the history$(if ($Match) { " matches '$Match'" })." -ForegroundColor DarkGray; exit 0 }
+    $w = [math]::Max(40, (Get-ConsoleWidth) - 1)
+    Write-Host ("{0,-16} {1,6} {2,9}  {3}" -f 'Downloaded', 'Height', 'Size', 'Title  (folder)') -ForegroundColor DarkGray
+    foreach ($hr in $rows) {
+        $when = [DateTimeOffset]::FromUnixTimeSeconds($hr.T).LocalDateTime.ToString('yyyy-MM-dd HH:mm')
+        $h = if ($hr.H -match '^\d+$') { "$($hr.H)p" } elseif ($hr.Path -match '\.(mp3|m4a|opus|ogg|flac|wav)$') { 'audio' } else { '?' }
+        $size = if (Test-Path -LiteralPath $hr.Path) { $b = (Get-Item -LiteralPath $hr.Path).Length; if ($b -ge 1GB) { '{0:N2} GB' -f ($b / 1GB) } else { '{0:N0} MB' -f ($b / 1MB) } } else { 'deleted' }
+        $line = "{0,-16} {1,6} {2,9}  {3}  ({4})" -f $when, $h, $size, $hr.Title, (Split-Path $hr.Path -Parent)
+        if ($line.Length -gt $w) { $line = $line.Substring(0, $w - 3) + '...' }
+        Write-Host $line -ForegroundColor $(if ($size -eq 'deleted') { 'DarkGray' } else { 'Gray' })
+    }
+    Write-Host "[ytdl] $($rows.Count) shown. All of it: $historyFile" -ForegroundColor DarkGray
+    exit 0
+}
+
 if ($ListQueue -or $ClearQueue) {
     if ($ClearQueue) {
         $l = Lock-Queue; try { $n = @(Read-QueueRaw).Count; Write-QueueRaw @() } finally { $l.Dispose() }
@@ -948,6 +1053,56 @@ if ($Sync) {
         try { [IO.File]::WriteAllLines($list, [string[]]$live, (New-Object Text.UTF8Encoding($false))) } catch { }
         $gone
     }
+    # 1.23.0 -Feed: a podcast feed (RSS 2.0) of the files in the subscription's file list that still exist,
+    # newest upload first. So -Keep / -KeepDays shape the feed too. Title = the file name without "[id]".
+    function Write-SubFeed($s) {
+        if (-not $s.Options -or -not ($s.Options.PSObject.Properties['Feed'] -or $s.Options.PSObject.Properties['FeedBase'])) { return $null }
+        $base = if ($s.Options.PSObject.Properties['FeedBase']) { ([string]$s.Options.FeedBase).TrimEnd('/') } else { '' }
+        $root = [IO.Path]::GetFullPath($s.Out).TrimEnd('\')
+        $byId = [ordered]@{}
+        $list = Get-SubFileList $s
+        if (Test-Path -LiteralPath $list) {
+            foreach ($l in [IO.File]::ReadAllLines($list)) {
+                $p = $l -split "`t", 3
+                if ($p.Count -lt 3 -or $p[1] -notmatch '^[\w-]{11}$') { continue }
+                $path = $p[2].Trim()
+                if ($path -match '\.(json|nfo|jpg|webp|png|vtt|srt)$' -or -not (Test-Path -LiteralPath $path)) { continue }
+                $byId[$p[1]] = [pscustomobject]@{ Date = $p[0].Trim(); Id = $p[1]; Path = [IO.Path]::GetFullPath($path) }
+            }
+        }
+        $types = @{ '.mp4' = 'video/mp4'; '.m4a' = 'audio/mp4'; '.mp3' = 'audio/mpeg'; '.opus' = 'audio/ogg'; '.ogg' = 'audio/ogg'; '.webm' = 'video/webm'; '.mkv' = 'video/x-matroska'; '.flac' = 'audio/flac'; '.wav' = 'audio/wav' }
+        $esc = { param($t) [Security.SecurityElement]::Escape([string]$t) }
+        $sb = New-Object Text.StringBuilder
+        [void]$sb.AppendLine('<?xml version="1.0" encoding="UTF-8"?>')
+        [void]$sb.AppendLine('<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">')
+        [void]$sb.AppendLine('<channel>')
+        [void]$sb.AppendLine("  <title>$(& $esc (Split-Path $root -Leaf))</title>")
+        [void]$sb.AppendLine("  <link>$(& $esc $s.Url)</link>")
+        [void]$sb.AppendLine("  <description>$(& $esc "Downloaded by ytdl from $($s.Url)")</description>")
+        [void]$sb.AppendLine("  <lastBuildDate>$((Get-Date).ToUniversalTime().ToString('r'))</lastBuildDate>")
+        $n = 0
+        foreach ($it in @($byId.Values | Sort-Object Date -Descending)) {
+            $fi = Get-Item -LiteralPath $it.Path
+            $title = ([IO.Path]::GetFileNameWithoutExtension($fi.Name) -replace "\s*\[$([regex]::Escape($it.Id))\]", '').Trim()
+            $when = try { [datetime]::ParseExact($it.Date, 'yyyyMMdd', [Globalization.CultureInfo]::InvariantCulture) } catch { $fi.LastWriteTime }
+            $rel = if ($fi.FullName.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { $fi.FullName.Substring($root.Length + 1) } else { $null }
+            $href = if ($base -and $rel) { $base + '/' + ((($rel -split '\\') | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/') } else { ([Uri]$fi.FullName).AbsoluteUri }
+            $type = $types[$fi.Extension.ToLowerInvariant()]; if (-not $type) { $type = 'application/octet-stream' }
+            [void]$sb.AppendLine('  <item>')
+            [void]$sb.AppendLine("    <title>$(& $esc $title)</title>")
+            [void]$sb.AppendLine("    <link>https://www.youtube.com/watch?v=$($it.Id)</link>")
+            [void]$sb.AppendLine("    <guid isPermaLink=`"false`">yt:$($it.Id)</guid>")
+            [void]$sb.AppendLine("    <pubDate>$($when.ToString('r'))</pubDate>")
+            [void]$sb.AppendLine("    <enclosure url=`"$(& $esc $href)`" length=`"$($fi.Length)`" type=`"$type`"/>")
+            [void]$sb.AppendLine('  </item>')
+            $n++
+        }
+        [void]$sb.AppendLine('</channel>')
+        [void]$sb.AppendLine('</rss>')
+        $out = Join-Path $root 'feed.xml'
+        try { [IO.File]::WriteAllText("$out.tmp", $sb.ToString(), (New-Object Text.UTF8Encoding($false))); Move-Item -LiteralPath "$out.tmp" -Destination $out -Force } catch { return $null }
+        "$n episode(s) in $out"
+    }
     Remove-Item $stopFile -Force -ErrorAction SilentlyContinue
     $hostExe = (Get-Process -Id $PID).Path
     $mode = if ($Estimate) { ' (estimate only)' } else { '' }
@@ -969,7 +1124,10 @@ if ($Sync) {
         $new = [math]::Max(0, (Get-ArchiveLines $s.Out) - $before)
         $total += $new
         $removed = 0
-        if (-not $Estimate -and $code -ne 2) { $removed = Invoke-Retention $s }
+        if (-not $Estimate -and $code -ne 2) {
+            $removed = Invoke-Retention $s
+            $fd = Write-SubFeed $s; if ($fd) { Write-Host "  Feed: $fd" -ForegroundColor DarkGray }   # 1.23.0
+        }
         $done[$s.Url] = @{ Code = $code; New = $new }
         Add-SyncLog "$($s.Url): exit $code, $new new$(if ($removed) { ", $removed removed by retention" })"
         if ($code -eq 2) { $worst = 2; Write-Host "[ytdl] That run was stopped; remaining subscriptions skipped." -ForegroundColor Yellow; break }
@@ -1297,6 +1455,7 @@ if ($Library) {
     # Episode image next to each video (Jellyfin: <name>-thumb.jpg; Plex: <name>.jpg) and the playlist or
     # channel image as the show's poster.jpg; jpg because both servers read it
     $thumbName = if ($Library -eq 'jellyfin') { "$dir/$base-thumb.%(ext)s" } else { "$dir/$base.%(ext)s" }
+    if ($Template) { Write-Host "[ytdl] -Template doesn't go with -Library (the media-server layout names the files); ignoring -Template." -ForegroundColor Yellow }
     $libArgs = @('--write-thumbnail', '--convert-thumbnails', 'jpg', '-o', "thumbnail:$thumbName", '-o', "pl_thumbnail:$show/poster.%(ext)s")
     if ($Library -eq 'jellyfin') {
         # One-line episode .nfo written by yt-dlp after the move (%(..)h = HTML-escaped). Season = year,
@@ -1309,12 +1468,26 @@ if ($Library) {
     }
 }
 
+# 1.23.0 -Template: the file name only; the folder stays ytdl's
+if ($Template -and -not $Library) {
+    $name = $Template.Trim()
+    if ($name -notmatch '%\(ext\)s$') { $name += '.%(ext)s' }
+    if ($name -notmatch '%\(id\)s' -and $Worker -eq 0) { Write-Host "[ytdl] Note: -Template has no [%(id)s]. Repeats are still skipped (the archive), but two videos with the same title can collide, and the id is how the file can be matched to its video later." -ForegroundColor DarkGray }
+}
+# 1.23.0 -Section: the clip's times in its name, so clips of one video don't overwrite each other
+if ($clipTag) { $name = $name -replace '\.%\(ext\)s$', " ($clipTag).%(ext)s" }
+# 1.23.0 -Codec / -Container: preferences after the height (res stays first, so -Quality still decides)
+$fmtSort = 'res'
+switch ($Codec) { 'h264' { $fmtSort += ',vcodec:h264,acodec:aac' } 'vp9' { $fmtSort += ',vcodec:vp9' } 'av1' { $fmtSort += ',vcodec:av01' } }
+if ($Container -eq 'webm') { $fmtSort += ',ext:webm:webm' }
+$fmtSort += ',proto'
+
 $ytArgs = @(
     '--paths', $Out,
     '-o', "$dir/$name",
     '--yes-playlist',
     '--ignore-errors',                       # skip private/removed videos instead of stopping
-    '--download-archive', (Join-Path $Out '.ytdl-archive.txt'),  # re-runs skip finished videos
+    '--download-archive', (Join-Path $Out $archName),  # re-runs skip finished videos (1.23.0: clips keep their own)
     '--no-overwrites',
     '--continue',
 
@@ -1326,7 +1499,7 @@ $ytArgs = @(
     '--retries', '10',
     '--fragment-retries', '10',
     '--abort-on-unavailable-fragments',      # a video with missing pieces fails (and is retried) instead of saving a broken file
-    '-S', 'res,proto'                        # same resolution: prefer plain https over fragmented (HLS/DASH) streams
+    '-S', $fmtSort                           # same resolution: prefer plain https over fragmented (HLS/DASH) streams
 )
 
 if ($AudioOnly) {
@@ -1346,10 +1519,31 @@ if ($AudioOnly) {
         if ($Quality -eq '360') { $fmt = "18/$fmt" }
         else { Write-Host "[ytdl] -Fast360 only applies with -Quality 360; ignoring it." -ForegroundColor Yellow }
     }
-    $ytArgs += @('-f', $fmt, '--merge-output-format', 'mp4')
+    $merge = switch ($Container) { 'mkv' { 'mkv' } 'webm' { 'webm/mkv' } default { 'mp4' } }   # 1.23.0
+    $ytArgs += @('-f', $fmt, '--merge-output-format', $merge)
 }
 
-if ($Subs)  { $ytArgs += @('--write-subs', '--write-auto-subs', '--sub-langs', 'en.*', '--embed-subs') }
+# 1.23.0: -SubLangs picks the languages (implies -Subs); -LiveChat adds the chat replay (a .json file, never embedded)
+$subList = @()
+if ($Subs -or $SubLangs) {
+    $subList += $(if ($SubLangs -eq 'all') { @('all', '-live_chat') } elseif ($SubLangs) { @($SubLangs -split '\s*,\s*' | Where-Object { $_ }) } else { @('en.*') })
+}
+if ($LiveChat) { $subList += 'live_chat' }
+if ($subList) {
+    $ytArgs += @('--write-subs', '--sub-langs', ($subList -join ','))
+    if ($Subs -or $SubLangs) { $ytArgs += @('--write-auto-subs', '--embed-subs') }
+}
+if ($Section) {
+    foreach ($sp in @($Section -split '\s*,\s*' | Where-Object { $_ })) { $ytArgs += @('--download-sections', "*$sp") }
+    $ytArgs += '--force-keyframes-at-cuts'   # exact cut points (re-encodes the edges) instead of the nearest keyframe
+}
+# 1.23.0 -Live: record a stream from its start (or wait for it to start, checking every minute). A live stream
+# drops pieces now and then; skip them instead of failing the whole recording.
+if ($Live) {
+    $ytArgs = @($ytArgs | Where-Object { $_ -ne '--abort-on-unavailable-fragments' })
+    $ytArgs += @('--live-from-start', '--wait-for-video', '60', '--skip-unavailable-fragments')
+}
+if ($SplitChapters) { $ytArgs += @('--split-chapters', '-o', "chapter:$dir/%(title)s [%(id)s]/%(section_number)03d - %(section_title)s.%(ext)s") }
 if ($ItemsStr) { $ytArgs += @('--playlist-items', $ItemsStr) }
 
 # 1.16.0 filters, for yt-dlp. One --match-filters holding all conditions (several are OR'ed). In a
@@ -1373,6 +1567,9 @@ if ($afterDate) {
 }
 # -Sync: record each finished file (upload date, id, final path) for the subscription's -Keep/-KeepDays
 if ($FileList) { $ytArgs += @('--print-to-file', "after_move:%(upload_date)s`t%(id)s`t%(filepath)s", $FileList) }
+# 1.23.0: every finished file goes into the history (ytdl -History). yt-dlp reads % in the file name as a field.
+try { [void](New-Item -ItemType Directory -Force -Path $stateDir) } catch { }
+$ytArgs += @('--print-to-file', "after_move:%(epoch)s`t%(id)s`t%(height|)s`t%(filepath)s`t%(title)s", ($historyFile -replace '%', '%%'))
 
 $authArgs = @()
 if ($Browser) { $authArgs += @('--cookies-from-browser', $Browser) }
@@ -1382,7 +1579,11 @@ if ($Cookies) {
 }
 $authArgs += $userNetArgs   # 1.18.0: -YtdlpArgs connection options reach every yt-dlp call (all of them include $authArgs)
 if (-not $NoMetadata)  { $ytArgs += '--embed-metadata' }
-if (-not $NoThumbnail) { $ytArgs += '--embed-thumbnail' }
+if (-not $NoThumbnail) {
+    # 1.23.0: yt-dlp can't put a thumbnail inside webm, so it is saved next to the file instead
+    if ($Container -eq 'webm' -and -not $AudioOnly) { if (-not $Library) { $ytArgs += @('--write-thumbnail', '--convert-thumbnails', 'jpg') } }
+    else { $ytArgs += '--embed-thumbnail' }
+}
 $ytArgs += $libArgs   # 1.19.0
 # 1.21.0 -SponsorBlock: download only (lookups don't need it); marks become chapters, removal cuts the file
 if ($SponsorBlock -eq 'mark') { $ytArgs += @('--sponsorblock-mark', 'all') }
@@ -1477,7 +1678,7 @@ $transientPattern = 'try again later|rate.?limit|HTTP Error 429|Too Many Request
 
 $ytArgs += $Url
 
-$archive = Join-Path $Out '.ytdl-archive.txt'
+$archive = Join-Path $Out $archName   # 1.23.0: a clip run uses its own
 # 1.7.0: the archive is held in memory and only newly appended lines are read (yt-dlp appends one
 # line per finished video). 1.6.x searched the whole file once per video: 1,463 searches at the start
 # of a real run and one per finished video, growing with the archive.
@@ -1855,6 +2056,7 @@ function Get-EtaSeconds {
 function Show-Eta([string]$note) {
     if (-not $eta.Queue) { return }
     if ($script:bgScan) { return }   # 1.16.0: single video, duration not known yet (Merge-BgScan shows it)
+    if ($Section -or $Live) { return }   # 1.23.0: a clip or a live stream has no size to estimate from
     $left  = $eta.Pending.Count
     $media = 0.0; $mib = 0.0
     foreach ($id in $eta.Pending) { $d = $eta.Queue[$id]; if ($d -le 0) { $d = $eta.AvgDur }; $media += $d; $mib += Get-X $id }
@@ -3093,7 +3295,7 @@ if ($Worker -eq 0) { Clear-StopFiles }
 # tests), the run restarts with one piece at a time.
 # 1.13.0: also with 2 workers. 2-worker runs without pieces got 4.3-9.0 MiB/s per stream (mean 7.2,
 # 3 real runs) against 14.8 for one worker with pieces; two streams don't fill the connection.
-$fragN = if ($limitBytes -gt 0) { 0 } elseif ($Fragments -ge 0) { $Fragments } elseif ($Worker -eq 0 -or $WorkerCount -le 2) { 3 } else { 0 }
+$fragN = if ($limitBytes -gt 0 -or $Section -or $Live) { 0 } elseif ($Fragments -ge 0) { $Fragments } elseif ($Worker -eq 0 -or $WorkerCount -le 2) { 3 } else { 0 }
 function Set-FragMode([bool]$on) {
     $script:fragOn = $on
     if ($on) { $env:YTDL_FRAGMENTS = '1' } else { Remove-Item Env:YTDL_FRAGMENTS -ErrorAction SilentlyContinue }
