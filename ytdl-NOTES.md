@@ -1,10 +1,10 @@
-# ytdl 1.24.1 — Changelog & Logic Notes
+# ytdl 1.24.2 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.24.1 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.24.2 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -128,6 +128,14 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 ---
 
 ## Changelog
+
+### 1.24.2 — Size estimates follow this run's own videos (2026-11-14)
+| Change | Detail |
+|---|---|
+| **Bitrate history weight** | Saved bitrate history (per folder and quality) still counts as up to 2 h of video until the run has sizes of its own; once it has any (the resolution check's samples, the size probe, finished downloads) it counts as at most 10 min. Bitrate is a property of the content and a folder's history is often other content: a real 13-video 1080p/1440p run first read 434 MB for ~970 MB (history 0.11 MiB/s at 2 h weight against 3 samples at ~0.3), so its first ETA ran -59% or more until the size probe filled in exact sizes a minute later |
+
+**Measured (replay, `bench\bitrate-blend.ps1`):** each run's bitrate predicted from 3 of its videos plus other content's history, 4 distinct contents above 480p: mean error 66% at 2 h, 28% at 10 min (bench logs alone 21% -> 18%). At 360p history barely matters (6-10%). The same run, once sizes were known: the combined finish read 23:18:42 for 23:18:44.
+**Verified:** `tests\v1.24.2.ps1` 7/7 (Get-Bitrate taken from the script: full history with no sizes, capped with sampled or downloaded sizes, short history kept whole, finished videos' sizes ignored); `tests\v1.24.1.ps1` 28/29 and `tests\v1.23.0.ps1` offline 22/23, the misses being their version checks. Check-Ytdl: ascii, parse 7/5.1, names, case variants.
 
 ### 1.24.1 — More accurate estimates: parallel speed, `-LimitRate`, the last worker (2026-11-14)
 | Change | Detail |

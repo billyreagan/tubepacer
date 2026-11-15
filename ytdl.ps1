@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.24.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.24.2 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -267,7 +267,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.24.1'
+$YtdlVersion = '1.24.2'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -1860,6 +1860,11 @@ $ovShrinkN   = 1.0      # prior overhead counts as this many videos
 $brShrinkSec = 1200.0   # prior bitrate counts as this many seconds of video (a few 4K shorts can't swing it)
 $capOvN      = 5.0      # saved history counts as at most 5 videos' overhead...
 $capBrSec    = 7200.0   # ...2 h of video for bitrate...
+# 1.24.2: ...but only 10 min once this run has sizes of its own (sampled, probed or downloaded). Bitrate is
+# a property of the content, and a folder's history is often other content: a real 13-video 1080p/1440p
+# run first read 434 MB for ~970 MB (2 h of 0.11 MiB/s history vs 3 samples at ~0.3). Replay of 4 distinct
+# contents, 3 samples each (bench\bitrate-blend.ps1): run bitrate error 66% at 2 h, 28% at 10 min, 22% at 0.
+$capBrRunSec = 600.0
 $capBwMiB    = 150.0    # ...and 150 MiB of transfer for bandwidth (this run's transfers soon outweigh it)
 
 # Keys: bitrate depends on quality only; overhead and bandwidth depend on -Sleep and on how many
@@ -1879,7 +1884,8 @@ $eta = @{ Queue = $null; Pending = $null; Total = 0; AvgDur = 0.0; Size = [hasht
           Cur = $null; CurStart = $null; CurXferSec = 0.0; CurMiB = 0.0
           OvN = 0.0; OvSum = 0.0                 # overhead samples (steady state)
           RunN = 0; FirstOv = $null              # this run's first video: start-up cost, kept apart
-          BrMiB = 0.0; BrSec = 0.0               # bitrate samples (MiB, runtime s)
+          BrMiB = 0.0; BrSec = 0.0               # bitrate samples (MiB, runtime s), this run
+          HBrMiB = 0.0; HBrSec = 0.0             # saved bitrate history (capped at $capBrSec)
           HBwSec = 0.0; HBwMiB = 0.0             # saved bandwidth history
           LBwSec = 0.0; LBwMiB = 0.0             # this run: completed transfers
           HDraws = @(); Draws = (New-Object System.Collections.ArrayList)   # per-stream s/MiB draws (1.4.2)
@@ -1892,7 +1898,7 @@ if (Test-Path $rateFile) {
         $json = Get-Content $rateFile -Raw | ConvertFrom-Json
         foreach ($p in $json.PSObject.Properties) { $savedRates[$p.Name] = $p.Value }
         $h = $savedRates["br-$qualKey"]
-        if ($h -and $h.Sec -gt 0) { $w = [math]::Min(1.0, $capBrSec / [double]$h.Sec); $eta.BrMiB = $h.MiB * $w; $eta.BrSec = $h.Sec * $w }
+        if ($h -and $h.Sec -gt 0) { $w = [math]::Min(1.0, $capBrSec / [double]$h.Sec); $eta.HBrMiB = $h.MiB * $w; $eta.HBrSec = $h.Sec * $w }
     } catch { }
 }
 # Overhead and bandwidth history for this pacing level and worker count (reloaded when either changes).
@@ -1981,7 +1987,9 @@ function Get-Bitrate {
             if ($eta.Pending.Contains($id) -and $eta.Size[$id] -gt 0) { $d = $eta.Queue[$id]; if ($d -gt 0) { $m += $eta.Size[$id]; $s += $d } }
         }
     }
-    $brCache.V = ($m + $p * $brShrinkSec) / ($s + $brShrinkSec); $brCache.T = Get-Date
+    $hs = $eta.HBrSec; $hm = $eta.HBrMiB
+    if ($s -gt 0 -and $hs -gt $capBrRunSec) { $hm *= $capBrRunSec / $hs; $hs = $capBrRunSec }   # 1.24.2: this run's own sizes outweigh history
+    $brCache.V = ($m + $hm + $p * $brShrinkSec) / ($s + $hs + $brShrinkSec); $brCache.T = Get-Date
     return $brCache.V
 }
 
@@ -2226,7 +2234,7 @@ function Save-Rate {
         # A single-video run has only its start-up-inflated sample; keep it rather than nothing.
         if ($eta.OvN -le 0 -and $null -ne $eta.FirstOv) { $eta.OvN = 1; $eta.OvSum = $eta.FirstOv }
         if ($eta.OvN -gt 0) { $savedRates["ov-$netKey"] = @{ N = $eta.OvN; Sum = $eta.OvSum; AvgSec = [math]::Round((Get-Overhead), 1); Updated = $now } }
-        if ($eta.BrSec -gt 0) { $savedRates["br-$qualKey"] = @{ MiB = $eta.BrMiB; Sec = $eta.BrSec; MiBPerVideoSec = [math]::Round((Get-Bitrate), 4); Updated = $now } }
+        if ($eta.BrSec -gt 0) { $savedRates["br-$qualKey"] = @{ MiB = $eta.HBrMiB + $eta.BrMiB; Sec = $eta.HBrSec + $eta.BrSec; MiBPerVideoSec = [math]::Round((Get-Bitrate), 4); Updated = $now } }
         $bm = $eta.HBwMiB + $eta.LBwMiB; $bs = $eta.HBwSec + $eta.LBwSec
         $allDraws = @(@($eta.HDraws) + @($eta.Draws) | Select-Object -Last 10)
         # 1.24.1: speeds under -LimitRate say nothing about the connection. E10 (2 MB/s) saved its slow
@@ -2642,9 +2650,9 @@ if ($willCheck -and $eta.Queue) {
         # first-10-minute ETA error 20.0% -> 7.4% with this plus the 3 sample sizes).
         $hmax = ($heights | Measure-Object -Maximum).Maximum
         $qualKey = "q$(if ($hmax -le 360) { 360 } else { 480 })"; $brCache.T = [datetime]::MinValue
-        $eta.BrMiB = 0.0; $eta.BrSec = 0.0
+        $eta.BrMiB = 0.0; $eta.BrSec = 0.0; $eta.HBrMiB = 0.0; $eta.HBrSec = 0.0
         $h = $savedRates["br-$qualKey"]
-        if ($h -and $h.Sec -gt 0) { $w = [math]::Min(1.0, $capBrSec / [double]$h.Sec); $eta.BrMiB = $h.MiB * $w; $eta.BrSec = $h.Sec * $w }
+        if ($h -and $h.Sec -gt 0) { $w = [math]::Min(1.0, $capBrSec / [double]$h.Sec); $eta.HBrMiB = $h.MiB * $w; $eta.HBrSec = $h.Sec * $w }
         Set-RunWorkers $workersN   # the new bitrate changes each download's share of the connection
         Write-Host ("[ytdl] Best available for these videos is {0}p, so this run uses the 480p-and-below settings." -f $hmax) -ForegroundColor Cyan
     } else { Update-BwPrior }
