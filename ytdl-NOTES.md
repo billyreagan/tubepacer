@@ -1,10 +1,10 @@
-# ytdl 1.22.0 — Changelog & Logic Notes
+# ytdl 1.22.1 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.22.0 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.22.1 (2026-11-14) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -119,6 +119,16 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.22.1 — YouTube's rate limit is no longer "won't fix itself" (2026-11-14)
+| Change | Detail |
+|---|---|
+| **Rate limit = transient** | YouTube's account rate limit arrives as `Video unavailable. This content isn't available, try again later. Your account has been rate-limited by YouTube for up to an hour.` Its first words matched the permanent-error list and the fast-client fallback list. So it could switch to yt-dlp's default clients (remembered 7 days) instead of slowing down, and the failed videos were labeled "won't fix itself (private, removed, blocked...)". New `$transientPattern` (`try again later`, `rate-limit`, `429`, `Too Many Requests`) overrides both lists |
+| **Retries** | At the slowest pacing level a rate limit can't step pacing down further. A retry pass that gets nothing used to say "remaining errors look permanent". It now says YouTube is still rate-limiting (for up to an hour) and stops retries, since more passes now only repeat it |
+| **Failed list** | These videos are tagged `(rate-limited, retry later)`, with a summary line telling you to re-run later. The tag is worked out from the saved reason, so lists saved by 1.22.0 are relabeled too |
+
+Found in the E3 README recording (2026-11-14): 5 of 12 videos were rate-limited after a heavy benchmark, and all 5 were shown as "won't fix itself".
+
+**Verified:** `tests\v1.22.1.ps1` 17/17 (offline; loads the script's own patterns and functions by AST): the rate-limit message is not permanent, gets the rate-limited tag (also from a worker's 160-char reason and from a 1.22.0-saved item), doesn't switch clients, still triggers pacing. Private / removed / members-only and a bare `Video unavailable` stay permanent; the embedding error still switches clients; the summary counts 2 rate-limited / 1 retry / 1 permanent. Check-Ytdl: ascii, parse 7/5.1, names ok.
 ### 1.22.0 — `-Quality 4320`, `240` and `144`; `-PoToken` (2026-11-14)
 | Change | Detail |
 |---|---|

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.22.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.22.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -231,7 +231,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.22.0'
+$YtdlVersion = '1.22.1'
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -1470,6 +1470,10 @@ function Save-ClientFallback {
     } catch { }
 }
 $clientFallbackPattern = 'Playback on other websites has been disabled|embedding (has been )?disabled|Requested format is not available|Video unavailable|This video is not available|Sign in to confirm your age|age.restricted|inappropriate for some users'
+# 1.22.1: YouTube's account rate limit arrives as "Video unavailable. This content isn't available, try again
+# later. Your account has been rate-limited ... for up to an hour." It matched 'Video unavailable' above and in
+# $permPattern, so it switched clients and was labeled "won't fix itself". It is transient: these words win.
+$transientPattern = 'try again later|rate.?limit|HTTP Error 429|Too Many Requests'
 
 $ytArgs += $Url
 
@@ -2482,7 +2486,12 @@ $failText  = Join-Path $Out 'ytdl-failed.txt'
 $permPattern = 'Private video|Video unavailable|video is unavailable|has been removed|has been terminated|copyright|members-only|Join this channel|not available in your country|blocked it in your country|confirm your age|age-restricted|inappropriate for some users|Premieres in|live event will begin|removed by the uploader|does not exist'
 function Get-ShortReason([string]$r) { $r = ($r -replace '\s+', ' ').Trim(); if ($r.Length -gt 160) { $r.Substring(0, 157) + '...' } else { $r } }
 function New-FailItem([string]$id, [string]$title, [string]$reason) {
-    [pscustomobject]@{ Id = $id; Title = $title; Reason = (Get-ShortReason $reason); Permanent = [bool]($reason -match $permPattern) }
+    [pscustomobject]@{ Id = $id; Title = $title; Reason = (Get-ShortReason $reason); Permanent = [bool]($reason -match $permPattern -and $reason -notmatch $transientPattern) }
+}
+# 1.22.1: the label shown after a failed video's reason. Worked out from the reason text, so items saved
+# by older versions (rate limits stored as Permanent) are labeled right too.
+function Get-FailTag($f) {
+    if ("$($f.Reason)" -match $transientPattern) { 'rate-limited, retry later' } elseif ($f.Permanent) { "won't fix itself" } else { '' }
 }
 function Save-FailedList([string]$url, $items) {
     try {
@@ -2506,7 +2515,7 @@ function Save-FailedList([string]$url, $items) {
             $t += "== $k   (last run $(Format-When $all[$k].When))"
             foreach ($f in $all[$k].Items) {
                 $t += "   $(if ($f.Title) { $f.Title } else { $f.Id })   https://www.youtube.com/watch?v=$($f.Id)"
-                $t += "      $($f.Reason)$(if ($f.Permanent) { "   [won't fix itself]" })"
+                $t += "      $($f.Reason)$(if ($tag = Get-FailTag $f) { "   [$tag]" })"
             }
             $t += ''
         }
@@ -2516,15 +2525,18 @@ function Save-FailedList([string]$url, $items) {
 function Show-FailedList($items) {
     $items = @($items); $n = $items.Count
     if (-not $n) { return }
-    $perm = @($items | Where-Object { $_.Permanent }).Count
+    $tags = @($items | ForEach-Object { Get-FailTag $_ })
+    $perm = @($tags | Where-Object { $_ -eq "won't fix itself" }).Count
+    $rate = @($tags | Where-Object { $_ -like 'rate-limited*' }).Count
     Write-Host ''
     Write-Host "[ytdl] $n video(s) couldn't be downloaded:" -ForegroundColor Yellow
     foreach ($f in ($items | Select-Object -First 15)) {
         Write-Host "  $(if ($f.Title) { $f.Title } else { $f.Id })  https://www.youtube.com/watch?v=$($f.Id)"
-        Write-Host "     $($f.Reason)$(if ($f.Permanent) { "  (won't fix itself)" })" -ForegroundColor DarkGray
+        Write-Host "     $($f.Reason)$(if ($tag = Get-FailTag $f) { "  ($tag)" })" -ForegroundColor DarkGray
     }
     if ($n -gt 15) { Write-Host "  ...and $($n - 15) more." }
-    if ($n - $perm) { Write-Host "  Re-run the same command to retry the $($n - $perm) that may still work." -ForegroundColor Yellow }
+    if ($rate) { Write-Host "  $rate refused because YouTube rate-limited this account (it says for up to an hour): re-run the same command later to get them." -ForegroundColor Yellow }
+    if ($n - $perm - $rate) { Write-Host "  Re-run the same command to retry the $($n - $perm - $rate) that may still work." -ForegroundColor Yellow }
     if ($perm) { Write-Host "  $perm won't fix itself (private, removed, blocked, age- or members-only)." -ForegroundColor DarkGray }
     Write-Host "  List saved: $failText" -ForegroundColor DarkGray
 }
@@ -2917,6 +2929,7 @@ function Wait-OrStop([int]$seconds) {
 # Run yt-dlp once, echoing its output live while scanning it for auth errors and error loops.
 function Invoke-Pass([string[]]$passArgs) {
     $script:authHit = $false
+    $script:rateHit = $false
     $script:thumbFail = $false
     $script:frag404 = 0
     $script:frag403 = 0
@@ -2971,13 +2984,14 @@ function Invoke-Pass([string[]]$passArgs) {
             if ($line -match '^ERROR: (?:\[[^\]]+\] )?([\w-]{11}): (.+)$') { $failInfo[$Matches[1]] = $Matches[2] }
             elseif ($line -match '^ERROR: (.+)$' -and $script:curVid) { $failInfo[$script:curVid] = $Matches[1] }
             if ($line -match $authPattern) { $script:authHit = $true }
+            if ($line -match '^ERROR' -and $line -match $transientPattern) { $script:rateHit = $true }
             if (($script:thumbPlugin -or $script:formatsPlugin) -and $line -match $helperFailPattern) { $script:thumbFail = $true }
 
             # S1: a bot check or rate limit means we're going too fast. Stop now and restart one
             # pacing level slower, before the rest of the list gets refused too.
             # 1.4.0: under the fast client, an embedding/age/format error means this video needs the
             # default clients. Restart with them (not counted as a pass).
-            if ($script:fastClient -and -not $runState.Abort -and $line -match '^ERROR' -and $line -match $clientFallbackPattern) {
+            if ($script:fastClient -and -not $runState.Abort -and $line -match '^ERROR' -and $line -match $clientFallbackPattern -and $line -notmatch $transientPattern) {
                 $runState.Abort = 'client'; $runState.Running = $false
                 & $killTree $PID
             }
@@ -3241,8 +3255,14 @@ try {
 
         # A retry pass that completes nothing new, with no auth errors, means the remaining
         # failures are persistent (private/removed/blocked), so further passes would just repeat them.
+        # 1.22.1: a rate limit seen at the slowest pacing level (pacing can't step down further) is not
+        # permanent, but YouTube keeps it for up to an hour, so more passes now would only repeat it.
         if ($pass -gt 1 -and $added -eq 0) {
-            Write-Host "No progress on this retry; remaining errors look permanent. Stopping retries." -ForegroundColor Yellow
+            if ($rateHit) {
+                Write-Host "No progress on this retry: YouTube is still rate-limiting this account (it says for up to an hour). Stopping retries; re-run the same command later to get the rest." -ForegroundColor Yellow
+            } else {
+                Write-Host "No progress on this retry; remaining errors look permanent. Stopping retries." -ForegroundColor Yellow
+            }
             break
         }
     }
