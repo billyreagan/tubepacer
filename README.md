@@ -94,7 +94,7 @@ Requirements: Windows 10/11, PowerShell 5.1 or 7.
 
 tubepacer finds these tools on `PATH` or in winget's install folders and caches their locations in `%LOCALAPPDATA%\ytdl\tools.json`.
 
-`ytdl -Version` prints the installed version. To update tubepacer, extract the latest release over the old files; subscriptions, the queue and learned estimates live in `%LOCALAPPDATA%\ytdl` and are kept. yt-dlp changes often to keep up with YouTube: `-AutoUpdate` updates it through winget before a run when it is 7 or more days old (checked at most once a day), or run `winget upgrade yt-dlp.yt-dlp`.
+`ytdl -Version` prints the installed version. To update tubepacer, extract the latest release over the old files; subscriptions, the queue and learned estimates live in `%LOCALAPPDATA%\ytdl` and are kept. yt-dlp changes often to keep up with YouTube: `-AutoUpdate` updates it before a run when it is 7 or more days old (checked at most once a day), with the manager it came from: Scoop, winget, pip or pipx. For a Chocolatey install it prints the admin command instead. `ytdl -Doctor` shows the update command for your install.
 
 </details>
 

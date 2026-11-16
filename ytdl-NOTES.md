@@ -1,10 +1,10 @@
-# ytdl 1.26.0 — Changelog & Logic Notes
+# ytdl 1.26.1 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.26.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.26.1 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -132,7 +132,7 @@ The `.bak` files above are in `ytdl-project\backups\`.
 | `-Estimate` | off | Print count, runtime, size and ETA, then exit without downloading |
 | `-Precise` | off | Look up exact file sizes first (~9 s/video) for an accurate ETA at mixed resolutions |
 | `-NoProbe` | off | Turn off the background size lookup used above 480p (1.3.0) |
-| `-AutoUpdate` | off | If yt-dlp is 7+ days old (checked at most daily), `winget upgrade` it first (1.3.0) |
+| `-AutoUpdate` | off | If yt-dlp is 7+ days old (checked at most daily), update it first (1.3.0) with the manager it came from: Scoop, winget, pip or pipx; Chocolatey gets the admin command printed instead (1.26.1) |
 | `-NoFastClient` | off | Use yt-dlp's default YouTube clients instead of the faster `web_embedded` extraction (1.4.0) |
 | `-Subscribe` | — | Save `<Url>` with `-Out` and the options given, for `-Sync` (1.15.0) |
 | `-Sync` | — | Download what's new on every subscription; with `-Estimate`, preview only (1.15.0) |
@@ -179,6 +179,15 @@ The `.bak` files above are in `ytdl-project\backups\`.
 
 ## Changelog
 
+### 1.26.1 — fix: `-AutoUpdate` uses the right updater (2026-11-16)
+| Change | Detail |
+|---|---|
+| **Right updater** | `-AutoUpdate` always ran `winget upgrade yt-dlp.yt-dlp`, so for a Scoop, pip or pipx yt-dlp it failed or installed a second copy that the first one hid on PATH. It now runs the command the doctor already shows for the copy that runs: `scoop update yt-dlp`, `pipx upgrade yt-dlp`, `python -m pip install -U yt-dlp` (with the python.exe next to its Scripts folder when there is one) or `winget upgrade --id <id>` (the id read from the package folder) |
+| **Chocolatey** | Needs an admin shell, so `-AutoUpdate` prints `choco upgrade yt-dlp` instead of running it |
+| **Hints** | The 30-day "yt-dlp is old" warning names the same command, not always winget. `-Doctor`'s "or run downloads with -AutoUpdate" note now shows for every install but Chocolatey |
+| **Code** | `Get-UpdateHint` moved from the doctor block to script scope; new `Invoke-ToolUpdate` (`YTDL_TEST_UPDATE=print` returns the command line without running it) |
+
+**Verified:** tests\v1.26.1.ps1 18/18 (offline: command for Scoop, pipx, pip with and without a python.exe next to Scripts, winget default and folder ids, Chocolatey not run, a fake scoop really run, the age-check block wired to it); tests\v1.26.0.ps1 43/43 with its version strings set to 1.26.1.
 ### 1.26.0 — `-Doctor` explains more, `-Report` (2026-11-16)
 | Change | Detail |
 |---|---|
@@ -922,7 +931,7 @@ The first 1.3.0 run was an outlier. Like-for-like gains were **25% (single) and 
 | 1.2.1 (no probe) | 18.0% | 50% | 9% |
 | **1.3.0 (probe)** | **9.8%** | **24%** | **2%** |
 
-**R3, yt-dlp age check.** At most daily (stamp in `%LOCALAPPDATA%\ytdl\update-check.json`), ytdl reads yt-dlp's date-based version. It warns at 30+ days, and **`-AutoUpdate`** runs `winget upgrade yt-dlp.yt-dlp` at 7+ days.
+**R3, yt-dlp age check.** At most daily (stamp in `%LOCALAPPDATA%\ytdl\update-check.json`), ytdl reads yt-dlp's date-based version. It warns at 30+ days, and **`-AutoUpdate`** updates it at 7+ days with the manager it came from (1.26.1; before, always `winget upgrade yt-dlp.yt-dlp`).
 
 **S4, metadata rewrite, measured and not changed.** yt-dlp's metadata step remuxes the finished file: **2.5–4 s per GB** (1.9 s for a 490 MB file, 0.5 s for 190 MB), i.e. 1–2 s on a ~500 MB best-quality video, under 2% of its time.
 

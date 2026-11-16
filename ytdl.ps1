@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.26.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.26.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -139,7 +139,7 @@ param(
     # requests during a block are thought to extend it.
     [switch]$IgnoreCooldown,
 
-    # If yt-dlp is 7+ days old (checked at most daily), update it via winget before downloading
+    # If yt-dlp is 7+ days old (checked at most daily), update it before downloading, with the manager it came from (Scoop, winget, pip, pipx; Chocolatey: prints the admin command)
     [switch]$AutoUpdate,
 
     # Use yt-dlp's default YouTube clients instead of the faster web_embedded-only extraction
@@ -277,7 +277,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.26.0'
+$YtdlVersion = '1.26.1'
 if ($Report) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -1309,6 +1309,36 @@ if (-not $ytdlp) {
     Write-Error "yt-dlp not found. Install it with: winget install yt-dlp.yt-dlp"
 }
 
+# ---- update commands by install method (1.26.0 doctor hints; script scope since 1.26.1) ----
+# The command that updates a tool, from the path of the copy that runs: Scoop, Chocolatey, pipx, pip or winget
+# (the winget id is read from the package folder, so ffmpeg from yt-dlp.FFmpeg keeps that id).
+function Get-UpdateHint([string]$tool, [string]$path) {
+    if ($path -match '\\scoop\\') { return "scoop update $tool" }
+    if ($path -match '\\chocolatey\\') { return "choco upgrade $tool" }
+    if ($path -match '\\pipx\\') { return "pipx upgrade $tool" }
+    if ($path -match '\\Python[^\\]*\\Scripts\\') { return "python -m pip install -U $tool" }
+    $id = @{ 'yt-dlp' = 'yt-dlp.yt-dlp'; ffmpeg = 'Gyan.FFmpeg'; deno = 'DenoLand.Deno' }[$tool]
+    if ($path -match '\\WinGet\\Packages\\([^\\_]+)_') { $id = $Matches[1] }
+    "winget upgrade $id"
+}
+# 1.26.1: -AutoUpdate runs the updater that matches the install (before, always winget, which failed or put a
+# second copy on PATH). pip uses the python.exe next to Scripts\ when there is one. Chocolatey needs admin: callers
+# print the hint instead. YTDL_TEST_UPDATE=print returns the command line without running it.
+function Invoke-ToolUpdate([string]$tool, [string]$path) {
+    $hint = Get-UpdateHint $tool $path
+    $exe, $argList = switch -Wildcard ($hint) {
+        'scoop *'  { 'scoop', @('update', $tool) }
+        'pipx *'   { 'pipx', @('upgrade', $tool) }
+        'python *' { $py = Join-Path (Split-Path (Split-Path $path)) 'python.exe'
+                     $(if (Test-Path -LiteralPath $py) { $py } else { 'python' }), @('-m', 'pip', 'install', '-U', $tool) }
+        'winget *' { 'winget', @('upgrade', '--id', ($hint -replace '^winget upgrade ', ''), '-e', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity') }
+        default    { $null, $null }
+    }
+    if (-not $exe) { return "not run (needs admin): $hint" }
+    if ($env:YTDL_TEST_UPDATE -eq 'print') { return "$exe $($argList -join ' ')" }
+    & $exe @argList 2>&1 | ForEach-Object { "$_" }
+}
+
 # ---- yt-dlp age check (R3) ----------------------------------------------------------------
 # An outdated yt-dlp is the most common cause of sudden failures (YouTube changes often).
 # yt-dlp versions are release dates (2026.10.26), so age is easy to tell. Checked at most daily.
@@ -1320,13 +1350,17 @@ if ($Worker -eq 0 -and $doCheck) {
     if ($ver -match '^(\d{4})\.(\d{2})\.(\d{2})') {
         $age = [int]((Get-Date) - (Get-Date -Year ([int]$Matches[1]) -Month ([int]$Matches[2]) -Day ([int]$Matches[3]))).TotalDays
         if ($AutoUpdate -and $age -ge 7) {
-            Write-Host "[ytdl] yt-dlp $ver is $age days old; updating with winget..." -ForegroundColor Cyan
-            winget upgrade --id yt-dlp.yt-dlp -e --accept-source-agreements --accept-package-agreements --disable-interactivity 2>&1 |
-                Select-Object -Last 2 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
-            $ver = "$(& $ytdlp --version 2>$null | Select-Object -First 1)".Trim()
-            Write-Host "[ytdl] yt-dlp is now $ver" -ForegroundColor Cyan
+            $hint = Get-UpdateHint 'yt-dlp' $ytdlp
+            if ($hint -like 'choco *') {
+                Write-Host "[ytdl] yt-dlp $ver is $age days old. It came from Chocolatey, which needs an admin shell: $hint" -ForegroundColor Yellow
+            } else {
+                Write-Host "[ytdl] yt-dlp $ver is $age days old; updating: $hint" -ForegroundColor Cyan
+                Invoke-ToolUpdate 'yt-dlp' $ytdlp | Select-Object -Last 2 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+                $ver = "$(& $ytdlp --version 2>$null | Select-Object -First 1)".Trim()
+                Write-Host "[ytdl] yt-dlp is now $ver" -ForegroundColor Cyan
+            }
         } elseif ($age -ge 30) {
-            Write-Host "[ytdl] yt-dlp $ver is $age days old. If downloads fail, update it: winget upgrade yt-dlp.yt-dlp (or run ytdl with -AutoUpdate)." -ForegroundColor Yellow
+            Write-Host "[ytdl] yt-dlp $ver is $age days old. If downloads fail, update it: $(Get-UpdateHint 'yt-dlp' $ytdlp) (or run ytdl with -AutoUpdate)." -ForegroundColor Yellow
         }
         try { New-Item -ItemType Directory -Force (Split-Path $updStamp) | Out-Null; @{ Checked = (Get-Date).ToString('s'); Version = $ver } | ConvertTo-Json | Set-Content $updStamp -Encoding ASCII } catch { }
     }
@@ -1405,15 +1439,7 @@ if ($Doctor) {
     function Get-InstallHint([string]$tool, [bool]$scoop) {
         if ($scoop) { "scoop install $tool" } else { 'winget install ' + @{ 'yt-dlp' = 'yt-dlp.yt-dlp'; ffmpeg = 'Gyan.FFmpeg'; deno = 'DenoLand.Deno' }[$tool] }
     }
-    function Get-UpdateHint([string]$tool, [string]$path) {
-        if ($path -match '\\scoop\\') { return "scoop update $tool" }
-        if ($path -match '\\chocolatey\\') { return "choco upgrade $tool" }
-        if ($path -match '\\pipx\\') { return "pipx upgrade $tool" }
-        if ($path -match '\\Python[^\\]*\\Scripts\\') { return "python -m pip install -U $tool" }
-        $id = @{ 'yt-dlp' = 'yt-dlp.yt-dlp'; ffmpeg = 'Gyan.FFmpeg'; deno = 'DenoLand.Deno' }[$tool]
-        if ($path -match '\\WinGet\\Packages\\([^\\_]+)_') { $id = $Matches[1] }
-        "winget upgrade $id"
-    }
+    # Get-UpdateHint lives at script scope since 1.26.1 (-AutoUpdate uses it too)
     function Get-RemoveHint([string]$tool, [string]$path) {
         (Get-UpdateHint $tool $path) -replace '^scoop update', 'scoop uninstall' -replace '^winget upgrade', 'winget uninstall' -replace '^choco upgrade', 'choco uninstall' -replace '^pipx upgrade', 'pipx uninstall' -replace '^python -m pip install -U', 'python -m pip uninstall'
     }
@@ -1515,7 +1541,7 @@ if ($Doctor) {
         $build = if ($ytdlp -eq $fastExe) { 'fast-starting build' } else { 'one-file build (starts ~0.7 s slower)' }
         $st = if ($null -ne $age -and $age -ge 60) { 'FAIL' } elseif ($null -ne $age -and $age -ge 30) { 'WARN' } else { 'OK' }
         $uh = Get-UpdateHint 'yt-dlp' $ytSrc
-        Out-Check $st 'yt-dlp' "$v, $age days old, $build" "$uh$(if ($uh -like 'winget *') { '   (or run downloads with -AutoUpdate)' })"
+        Out-Check $st 'yt-dlp' "$v, $age days old, $build" "$uh$(if ($uh -notlike 'choco *') { '   (or run downloads with -AutoUpdate)' })"
     }
     Test-ToolCopies 'yt-dlp'
     # ffmpeg / ffprobe
