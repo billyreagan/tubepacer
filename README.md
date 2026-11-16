@@ -145,7 +145,7 @@ Measured on one Windows PC and home connection; every run, script and raw result
 | | tubepacer | Others |
 |---|---|---|
 | **Stays under YouTube's limits.** Shared hourly budget; steps back on a bot check, eases back after clean videos; a circuit breaker stops before a block becomes a ban ([how](#how-pacing-works)). | 0 bot checks in 208 videos, signed in (E5–E6); 3.3× faster than yt-dlp's fixed sleeps on the same 6 videos (E5) | Fixed or random sleeps (yt-dlp `-t sleep`, ytdl-sub); adaptive pacing not documented |
-| **Size and finish time before the first byte.** | 50 videos: count, size and ETA in 7.2 s (E6E, replicated in R6E) | yt-dlp needs 153 s for sizes alone; whole-run ETA not documented |
+| **Size and finish time before the first byte.** | 50 videos: count, size and ETA in 3.9 s (R6E, replicating E6E) | yt-dlp needs 144 s for sizes alone; whole-run ETA not documented |
 | **A finish time that stays honest.** | Median 20.5 s off across 167 printed estimates (E7) | Per-file ETA only |
 | **Recovers when sign-in cookies rotate.** | Downloading again in a median 1.6 s; all 3 rotations recovered (E10) | Cookies read once at start |
 | **Catches YouTube's silent 360p replies.** | Re-asks and continues; 3 of 3 caught (release test) | yt-dlp saves 360p silently; ytdl-sub detects and stops |
@@ -457,7 +457,7 @@ Every run uses the same PC and connection, and compared tools run in paired roun
   <img alt="Speedup over yt-dlp at 1080p, signed in: 1 video 1.25×, 3 videos 1.37×, 6 videos 1.85×, 12 videos 1.64×; tubepacer won every round (E1)" src=".github/speedup-light.svg" width="960">
 </picture>
 
-The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.4, 16 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
+The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.5, 16 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
 
 ## Built on yt-dlp
 
