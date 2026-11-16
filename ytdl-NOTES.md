@@ -1,10 +1,10 @@
-# ytdl 1.29.0 — Changelog & Logic Notes
+# ytdl 1.32.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.29.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.32.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -67,6 +67,7 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `-Items "1-10,15"` | all | Playlist positions to download |
 | `-Browser firefox\|chrome\|edge\|brave\|opera\|vivaldi\|chromium` | — | Use that browser's signed-in YouTube session (fixes "not a bot") |
 | `-Cookies <file>` | — | Use an exported cookies.txt instead |
+| `-SignInOnBlock <browser>` | — | Start signed out; switch to this browser's signed-in session only if YouTube blocks the run (1.32.0). Off unless given |
 | `-Sleep <s>` | auto | **Auto (default, 1.3.0):** adaptive pacing, fastest when signed in, slowing down a level on any bot check or rate limit. A number fixes the pause at `s`–`2s` between videos plus 1 s between page requests; `0` = no pauses. |
 | `-Retries <n>` | `3` | Extra passes after a pass with errors (only failed items are retried) |
 | `-RetryDelay <s>` | `60` | Wait before each retry pass (1.18.0: unless given, the first retry waits 15 s) |
@@ -132,6 +133,33 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.32.0 — -SignInOnBlock: switch to signed in only when blocked (2026-11-16)
+
+| Part | Detail |
+|---|---|
+| **Option** | `-SignInOnBlock firefox` (or chrome, edge, ...): a signed-out run carries on signed in, once, with that browser's YouTube session. Off unless given; ignored with `-Browser` or `-Cookies` |
+| **When** | A bot check ("Sign in to confirm you're not a bot"; a 429 doesn't count), a "wants a signed-in session" error, or the limit guard being opened by another run on this PC. At the start: the guard is already open, or this folder switched less than 1 h ago (`.ytdl-signedin`, so later `-Dynamic` batches and re-runs start signed in) |
+| **After the switch** | Requests so far stay booked as signed out; the rest count against the signed-in budget (4700 an hour). Guard openings by other signed-out runs no longer stop this run; its own bot checks signed in open the guard as usual. The signed-out bot check is still recorded, so other signed-out runs back off. `-Parallel` workers each switch on their own |
+| **Why not always** | Signing in moves YouTube's attention from the connection to the account. Use a spare account's cookies; benchmarks never pass it (signed-out runs that switch halfway aren't comparable) |
+| **Log** | `[ytdl-event] signin: switched to <browser> (<reason>)` or `signin: start signed in ...` |
+
+**Verified:** offline tests\v1.32.0.ps1 34/34. Real runs 2026-11-16 while signed out was bot-blocked (tests\real-1.32.0.ps1, 4 videos 360p + English captions, exit 0 both): (A) guard open -> started signed in, -Parallel 3 workers, 202 s; (B) -IgnoreCooldown -Parallel 1 -> bot check on video 4, one switch to firefox, restart, all 4 done, 407 s, no bot check after the switch. Found and fixed on the way: the -Parallel coordinator and the guard watcher still held a run that had started signed in
+### 1.31.0 — Pacing review: rate limits slow a run down, never stop it (2026-11-16)
+Includes 1.30.0 (built, never released on its own).
+
+| Part | Detail |
+|---|---|
+| **429** | A 429 (Too Many Requests) raises the pace two levels and the run carries on. It never opens the breaker and never ends the run |
+| **Breaker** | Opens only on a bot check ("Sign in to confirm you're not a bot"): a flat 1 h wait, exit 75. Before, a 429 could open it and the wait doubled up to 8 h |
+| **Budget** | Counts requests instead of videos: 4700 an hour signed in, 700 signed out. At about 4.7 requests a video that is the same 1000 / 150 videos an hour as before. Logged as "N of M requests this hour" |
+| **Levels** | A level change waits for the next video. Going back down needs 30 min since the last hit; each new trip doubles the time before the next step down. L0 and L1 now have a small floor sleep; shorts sleep at least 5 s |
+| **Captions** | Plain language codes also ask for the original track (`de` -> `de,de-orig`; not for `all` or patterns). `--sleep-subtitles` 5 s, 10 s after a caption 429 |
+| **State per network** | Pace state is kept per network (`pace-<key>.json`, the key a hash of the local gateways; `YTDL_NETKEY` overrides). The first run copies the old `pace.json` once; another network starts fresh |
+| **Locking** | The pace file is never written without its lock: after 30 s of waiting the update is dropped with "pace state busy ... not saved". The watchdog checks the breaker and the pace every 2 s |
+| **Limit lines** | Limit words count only on yt-dlp `ERROR:` / `WARNING:` lines, so a title such as "Why 429 happens" no longer trips the guard |
+| **Doctor** | `-Browser` warns: use a spare account's cookies, YouTube can flag the account. Warns when deno is older than 2.3. The limit guard line shows the request budgets |
+
+**Verified:** offline tests\v1.30.0.ps1 41/41, tests\v1.31.0.ps1 25/25. Real run 2026-11-16 (tests\real-1.31.0.ps1 -Browser firefox; signed-out runs were bot-blocked that day): 4 playlist videos at 360p with English captions, exit 0, budget line "4 of 4700 requests", pace file written, no "pace state busy", no limit hit, 115 s.
 ### 1.29.0 — `-Doctor -Fix`: the doctor makes the fixes it can (2026-11-16)
 | Part | Detail |
 |---|---|

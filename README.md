@@ -157,7 +157,7 @@ Measured on one Windows PC and home connection; every run, script and raw result
 Also measured: 1.64× faster than yt-dlp on a 12-video 1080p batch (E1); 1.35× faster at 144p to 1080p, 6 resolutions pooled, with both tools delivering all 14 requested format classes up to 8K HDR (E11); 1,026 archive videos in five runs, signed in, 0 failed; yt-dlp start-up 1.0 s → 0.33 s; 1,036 missed thumbnail lookups per season → 0.
 
 > [!NOTE]
-> **Where others lead.** Signed out, tubepacer drew 1.52× as many bot checks as yt-dlp (E9), though it delivered 44 of 80 videos to yt-dlp's 0. On the 6-video job, yt-pdlp tied it (0.99×, E8).
+> **Where others keep up.** On the 6-video job, yt-pdlp tied it (0.99×, E8). Signed out there is no replicated bot-check result: the planned rerun was bot-blocked and dropped, so the report makes no claim either way.
 
 ## Recipes
 
@@ -208,13 +208,13 @@ Pacing asks YouTube less often. It doesn't hide.
 
 > **What tubepacer will not do:** rotate proxies or IP addresses, fake browser fingerprints, or cycle cookies across accounts.
 
-It has three parts, and all ytdl runs and workers on the PC share them through `%LOCALAPPDATA%\ytdl\pace.json`, because YouTube limits the IP address and the account, not the folder.
+It has three parts, and all ytdl runs and workers on the PC share them through `%LOCALAPPDATA%\ytdl\pace-<network>.json` (one file per network), because YouTube limits the IP address and the account, not the folder.
 
-**Budget.** A shared one-hour log of videos started. The limit is about half of the figures in yt-dlp's wiki: 150 videos an hour signed out and 1,000 signed in. At 80% of the limit the run slows down one level. Over the limit, it waits until the oldest start drops out of the hour, then carries on.
+**Budget.** A shared one-hour log of YouTube requests (page, player, caption and size checks, retries included). The limit is 700 requests an hour signed out and 4,700 signed in: at about 4.7 requests a video that is 150 and 1,000 videos, about half of the figures in yt-dlp's wiki. At 80% of the limit the run slows down one level. Over the limit, it waits until enough of the hour's oldest requests drop out, then carries on.
 
-**Steps.** There are six levels, from L0 (no pauses) to L5 (20–40 s between videos, 3 s before each request). A bot check moves the run up one level and a 429 moves it up two. All parallel workers follow the slowest. After 25 videos in a row without a bot check, the run comes down one level, but never below its starting level: L1 signed in (L0 for 20 videos or fewer) and L3 signed out. A step-back is saved and loses one level for every two hours without a bot check, so the next run starts where it should.
+**Steps.** There are six levels, from L0 (no pauses) to L5 (20–40 s between videos, 3 s before each request). A bot check moves the run up one level and a 429 moves it up two; a change takes effect from the next video. All parallel workers follow the slowest. After 25 videos in a row without a bot check, and no limit hit on the PC for 30 minutes, the run comes down one level; each new trip in a run doubles the clean streak needed (up to 200). It never goes below its starting level: L1 signed in (L0 for 20 videos or fewer) and L3 signed out. A step-back is saved and loses one level for every two hours without a bot check, so the next run starts where it should.
 
-**Breaker.** A 429, a bot check at L5, or a second bot check within 10 minutes on this PC stops every run on the PC for one hour. Each repeat within 24 hours doubles the pause, up to 24 hours. While the breaker is open, new runs print the time it closes and exit (code 75) without asking YouTube anything, so closing the window is fine. The first run after it checks one video before starting the rest, at the level that was held.
+**Breaker.** A bot check at L5, or a second bot check within 10 minutes on this PC, stops every run on the PC for one hour. A 429 never stops a run: it only slows it down. While the breaker is open, new runs print the time it closes and exit (code 75) without asking YouTube anything, so closing the window is fine. The first run after it checks one video before starting the rest, at the level that was held.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/pacing-dark.svg">
@@ -227,8 +227,8 @@ It also tells YouTube's signals apart:
 
 | Signal | What it usually means | What tubepacer does |
 |---|---|---|
-| HTTP 429, or "isn't available, try again later" | Over YouTube's limit | Up two levels and opens the breaker |
-| "Confirm you're not a bot", signed out | The connection's reputation | Up one level, and suggests `-Browser` |
+| HTTP 429, or "isn't available, try again later" | Over YouTube's limit | Up two levels; the run carries on |
+| "Confirm you're not a bot", signed out | The connection's reputation | Up one level, and suggests `-Browser` or `-SignInOnBlock` |
 | "Video unavailable" three times, signed in | The account may be limited | Suggests trying without `-Browser`/`-Cookies` |
 | 429 on captions only | Captions have a stricter limit | Captions wait 10 s each; videos are not slowed |
 
@@ -306,6 +306,7 @@ Option | What it does | Default
 :---|:---|:---
 `-Browser NAME` | Use your signed-in YouTube session from firefox, chrome, edge, brave, opera, vivaldi or chromium |
 `-Cookies FILE` | Or: an exported cookies.txt (Netscape format) |
+`-SignInOnBlock NAME` | Start signed out; on a bot check, carry on once signed in with that browser's YouTube session. Use a spare account: YouTube can flag the account | off
 `-Sleep SECONDS` | Pause between videos, randomized up to 2x. -1 = adaptive pacing, 0 = none | -1
 `-IgnoreCooldown` | Start even while the limit guard's breaker is open after a YouTube block. Not advised: requests during a block are thought to extend it | off
 `-NoFastClient` | Use yt-dlp's default YouTube clients instead of tubepacer's faster single-client extraction |
@@ -422,7 +423,7 @@ Path|Holds
 `%LOCALAPPDATA%\ytdl\queue.json`|Links waiting for the running download
 `%LOCALAPPDATA%\ytdl\tools.json`|Where yt-dlp, ffmpeg and deno were found
 `%LOCALAPPDATA%\ytdl\history.tsv`|Every finished download, for `-History` (from 1.23.0 on)
-`%LOCALAPPDATA%\ytdl\pace.json`|The limit guard, shared by every run on the PC: breaker, hourly budget, recent bot checks (from 1.25.0 on)
+`%LOCALAPPDATA%\ytdl\pace-<network>.json`|The limit guard, shared by every run on the PC on that network: breaker, hourly request budget, recent bot checks (`pace.json` before 1.31.0)
 `<Out>\<Folder>\.ytdl-pace.json`|This folder's saved pacing level after a bot check
 
 With `-Library`, files follow the media-server convention, one show per channel and one season per upload year:
@@ -450,14 +451,14 @@ A run seems stuck|tubepacer kills a pass after `-StallMinutes` of silence and re
 
 ## Benchmarks
 
-Every run uses the same PC and connection, and compared tools run in paired rounds on the same videos. The verdict rule was fixed before the later suites ran, and a tie is reported as a tie and a loss as a loss. Of 16 comparisons, tubepacer leads 11, ties 4 and is behind in 1 (signed out, E9). E11's 144p–1080p figure pools 6 resolution classes, a choice made after the runs.
+Every run uses the same PC and connection, and compared tools run in paired rounds on the same videos. The verdict rule was fixed before the later suites ran, and a tie is reported as a tie and a loss as a loss. Of 19 comparisons, tubepacer leads 13, ties 6 and is behind in none; 12 of the 13 leads stay significant after Holm correction. E11's 144p–1080p figure pools 6 resolution classes, a choice made after the runs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/speedup-dark.svg">
   <img alt="Speedup over yt-dlp at 1080p, signed in: 1 video 1.25×, 3 videos 1.37×, 6 videos 1.85×, 12 videos 1.64×; tubepacer won every round (E1)" src=".github/speedup-light.svg" width="960">
 </picture>
 
-The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.5, 16 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
+The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.6, 16 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
 
 ## Built on yt-dlp
 

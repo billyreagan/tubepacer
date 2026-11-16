@@ -1,6 +1,6 @@
 # How tubepacer paces itself
 
-This page describes the pacing design in tubepacer 1.25.0 in enough detail to reimplement it. The code is in `ytdl.ps1`: look for `limit guard`, `Step-Budget` and `$paceLevels`. Where this page and the code disagree, the code is right; please [open an issue](https://github.com/billyreagan/tubepacer/issues).
+This page describes the pacing design in tubepacer 1.32.0 in enough detail to reimplement it. The code is in `ytdl.ps1`: look for `limit guard`, `Step-Budget` and `$paceLevels`. Where this page and the code disagree, the code is right; please [open an issue](https://github.com/billyreagan/tubepacer/issues).
 
 The design has one rule: **ask YouTube less often**. It doesn't hide. tubepacer doesn't rotate proxies or IP addresses, fake browser fingerprints, or cycle cookies across accounts.
 
@@ -37,33 +37,33 @@ The request pause gets ±50% jitter, drawn fresh each time yt-dlp is launched, b
 
 - **Bot check:** up one level.
 - **429:** up two levels.
-- **25 videos in a row without a bot check:** down one level, to no lower than the floor.
+- **25 videos in a row without a bot check, and no limit hit on the PC for 30 minutes:** down one level, to no lower than the floor. Each trip in a run doubles the clean streak needed (up to 200).
+- Level changes take effect from the next video.
 - **Between runs:** the saved level loses one level for every two hours without a bot check. This applies to the folder's `.ytdl-pace.json` and to the level the last trip reached on this PC, which is kept in `pace.json`.
 
-After a bot check, yt-dlp is stopped (the partial file is kept) and restarted at the new level after 10 s. After a 429 it restarts after 30 s × the level. Both waits apply only if the breaker stays closed.
+After a bot check, yt-dlp is stopped (the partial file is kept) and restarted at the new level after 10 s. After a 429 it restarts after 30 s × the level (5 min at L5). A 429 never stops the run or opens the breaker (since 1.31). Both waits apply only if the breaker stays closed.
 
 ## The hourly budget
 
-Every run and worker on the PC records each video it starts in `%LOCALAPPDATA%\ytdl\pace.json`, with one log for signed in and one for signed out. These logs are kept separately because YouTube limits the IP address and the account separately, not per folder. Writes go through a named mutex.
+Every run and worker on the PC records the YouTube requests it makes (page, player and caption requests, scans, size checks, retries and restarts) in `%LOCALAPPDATA%\ytdl\pace-<network>.json`, with one log for signed in and one for signed out. These logs are kept separately because YouTube limits the IP address and the account separately, not per folder. The network key is a hash of the local gateways (`YTDL_NETKEY` overrides it), so another network starts fresh. Writes go through a named mutex; an update that waits more than 30 s is dropped rather than written without it.
 
-- **Limit:** 150 videos an hour signed out and 1,000 signed in. This is about half of the wiki's figures.
+- **Limit:** 700 requests an hour signed out and 4,700 signed in. At about 4.7 requests a video that is 150 and 1,000 videos, about half of the wiki's figures. (Before 1.31 the budget counted videos started.)
 - **At 80% of the limit:** up one level, once per run.
-- **Over the limit:** stop, wait until the oldest start drops out of the hour (plus 5 s), then continue.
+- **Over the limit:** stop, wait until enough of the oldest requests drop out of the hour to get back to 90%, then continue.
 
 ## The circuit breaker
 
 The breaker opens on any of these:
 
-- a 429
 - a bot check while already at L5
 - a second bot check within 10 minutes anywhere on the PC (hits within 60 s of each other count as one, since all workers see the same block at once)
 
 When it opens:
 
-- `CooldownUntil` is written to `pace.json`: 1 hour from now, doubled for each opening in the last 24 hours, up to 24 hours.
+- `CooldownUntil` is written to the pace file: 1 hour from now, flat (before 1.31 a 429 could open it too, and each opening doubled the pause).
 - Every run on the PC stops (partial files are kept) and exits with code **75**. The message gives the reason, the time the breaker closes, and the minutes left.
 - New runs, `-Estimate` included, print the same message and exit 75 before sending any request. A queue or `-Sync` stops at that point and keeps the rest of its work for later.
-- After the cooldown, the first run checks one video (`--simulate`, the first playlist item). If the check fails, the breaker opens again with the next, doubled pause. If it passes, the run starts at the level it held.
+- After the cooldown, the first run checks one video (`--simulate`, the first playlist item). If the check fails, the breaker opens again for another hour. If it passes, the run starts at the level it held.
 
 `-IgnoreCooldown` skips all of this. It isn't advised.
 
@@ -73,8 +73,8 @@ Before 1.25, pacing had no ceiling action. At L5 nothing more happened: one benc
 
 | Signal | Class | Action |
 |---|---|---|
-| HTTP 429, "Too Many Requests", "isn't available, try again later" | Over budget | Up 2 levels and open the breaker |
-| "Confirm you're not a bot", signed out | IP reputation | Up 1 level. The first time, suggest `-Browser` |
+| HTTP 429, "Too Many Requests", "isn't available, try again later" | Over budget | Up 2 levels; the run carries on |
+| "Confirm you're not a bot", signed out | IP reputation | Up 1 level. The first time, suggest `-Browser` or `-SignInOnBlock`. With `-SignInOnBlock`, switch to signed in once instead |
 | "Confirm you're not a bot", signed in | Pacing | Up 1 level. The breaker opens on a second one within 10 min, or one at L5 |
 | "Video unavailable" 3 times, signed in | The account may be flagged | Suggest trying without `-Browser`/`-Cookies` |
 | 429 on a caption download | Caption limit | Captions wait 10 s each. Videos aren't slowed |
@@ -96,8 +96,8 @@ These apply unless you pass your own `--retry-sleep`.
 Measured on one Windows PC and home connection. Every run, script and raw result is in the [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT).
 
 - **Signed in, adaptive pacing (1.24):** 0 bot checks in 208 videos (E5–E6). On the same 6 videos it was 3.3× faster than yt-dlp's fixed sleeps (E5).
-- **Signed out (1.24):** 1.52× as many bot checks as yt-dlp (E9), though tubepacer delivered 44 of 80 videos to yt-dlp's 0. This is the loss that 1.25's breaker and budget are meant to fix.
-- **1.25.0 against 1.24.2:** *to be measured.* This covers the E9 rerun signed out, the E5 and E6 reruns signed in, and a new E5R that counts the requests sent between the first bot check and the next saved file.
+- **Signed out:** no replicated result. The planned rerun was bot-blocked four times on 2026-11-16 and was dropped, so the report makes no signed-out bot-check claim.
+- **1.25.0 and later against 1.24.2:** *to be measured.* This covers the E5 and E6 reruns signed in, and a new E5R that counts the requests sent between the first bot check and the next saved file.
 
 Not measured:
 
