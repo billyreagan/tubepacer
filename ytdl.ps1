@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.26.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.27.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -277,7 +277,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.26.1'
+$YtdlVersion = '1.27.0'
 if ($Report) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -1419,7 +1419,7 @@ if (Test-Path -LiteralPath $fastExe) {
 # ---- 1.18.0: ytdl -Doctor ----------------------------------------------------------------------------
 # Everything a run depends on, checked the way a run uses it, with the fix for each problem. Online: the
 # sign-in check (one video, metadata only, ~3 s) and, at most daily, GitHub's latest tubepacer release
-# (1.26.0). Exit 0 = no problems, 1 = something failed. 1.26.0 -Report: the same results in a text file
+# (1.26.0), and one HEAD request to youtube.com for reachability and the clock (1.27.0). Exit 0 = no problems, 1 = something failed. 1.26.0 -Report: the same results in a text file
 # (and the clipboard) with names, folders and links hidden, ready for a GitHub issue.
 if ($Doctor) {
     $script:docBad = 0; $script:docWarn = 0; $script:docLines = New-Object 'Collections.Generic.List[string]'
@@ -1491,7 +1491,7 @@ if ($Doctor) {
         $endL = @($t | Where-Object { $_ -match '^Done\.$|^Finished with errors|Completed videos are kept' })
         $endL = if ($endL.Count) { $endL[-1] } else { '' }
         $bot = $t -match 'not a bot|Sign in to confirm|HTTP Error 429|rate-limiting'
-        $o = { param($s, $d, $x) [pscustomobject]@{ State = $s; Text = "$when`: $d"; Fix = $x } }
+        $o = { param($s, $d, $x) [pscustomobject]@{ State = $s; Text = "$when`: $d"; Fix = $x; Bot = [bool]$bot } }   # Bot: 1.27.0 IPv6 hint
         if ($running) { return (& $o 'INFO' 'running now' $log) }
         if ($endL -eq 'Done.') { return (& $o 'OK' 'finished without errors' '') }
         if ($endL -match '^Stopped by ytdl -Stop') { return (& $o 'INFO' 'stopped with ytdl -Stop' 're-run the same command to resume') }
@@ -1524,7 +1524,154 @@ if ($Doctor) {
         & $w (' ' + [string][char]0x25B6 + '  ') -ForegroundColor White -NoNewline
         & $w $msg -ForegroundColor Green
     }
-    $docHead = "ytdl $YtdlVersion doctor  |  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    # ---- 1.27.0: drive, folder, cookies, network and schedule checks. Each Test-* function judges the facts
+    # it is given and returns check lines (New-Check); Get-* functions gather the facts (with test hooks), so
+    # the tests feed fake ones: YTDL_TEST_FS, YTDL_TEST_LONGPATHS, YTDL_TEST_CFA, YTDL_TEST_PROCS ('none' = no
+    # programs), YTDL_TEST_CLOCK (skew in s, 'none' = no answer), YTDL_TEST_NET and YTDL_TEST_TASK (JSON).
+    function New-Check([string]$state, [string]$what, [string]$text, [string]$fix) { [pscustomobject]@{ State = $state; What = $what; Text = $text; Fix = $fix } }
+    function Out-Checks { foreach ($c in @($input)) { if ($c) { Out-Check $c.State $c.What $c.Text $c.Fix } } }
+    # The drive under the download folder (it may not exist yet): file system, type, network path, OneDrive
+    function Get-FolderFacts([string]$dir) {
+        $full = [IO.Path]::GetFullPath($dir); $fs = ''; $type = ''
+        try { $di = New-Object IO.DriveInfo([IO.Path]::GetPathRoot($full)); $type = "$($di.DriveType)"; $fs = "$($di.DriveFormat)" } catch { }
+        if ($env:YTDL_TEST_FS) { $fs = $env:YTDL_TEST_FS }   # test hook
+        $od = @(@($env:OneDrive, $env:OneDriveConsumer, $env:OneDriveCommercial) | Where-Object { $_ -and ($full.TrimEnd('\') + '\').StartsWith($_.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1
+        [pscustomobject]@{ Path = $full; FileSystem = $fs; DriveType = $type; Unc = $full.StartsWith('\\'); OneDrive = "$od" }
+    }
+    function Test-FolderType($f) {
+        $fix = 'download to a folder on a local NTFS drive with -Out'
+        if ($f.Unc -or $f.DriveType -eq 'Network') { return (New-Check WARN 'drive' 'a network drive: merging is slow there, and a dropped connection breaks the download being written' $fix) }
+        if ($f.OneDrive) { return (New-Check WARN 'drive' "inside OneDrive ($($f.OneDrive)): it uploads each video while it is written and can move finished ones online to free space" "$fix, or right-click the folder > Always keep on this device") }
+        if ($f.FileSystem -match '^FAT(32)?$') { return (New-Check WARN 'drive' "$($f.FileSystem): no file can be bigger than 4 GB, so long or 4K videos fail when they are merged" "$fix (or format the drive as NTFS or exFAT)") }
+        if ($f.FileSystem -eq 'exFAT') { return (New-Check INFO 'drive' 'exFAT: works; it keeps no journal, so unplugging during a run can damage the file being written' '') }
+        $kind = @{ Fixed = 'local disk'; Removable = 'removable drive'; Ram = 'RAM disk'; CDRom = 'CD/DVD drive' }["$($f.DriveType)"]; if (-not $kind) { $kind = 'drive' }
+        New-Check $(if ($f.DriveType -eq 'Removable') { 'INFO' } else { 'OK' }) 'drive' "$(if ($f.FileSystem) { $f.FileSystem } else { 'file system unknown' }), $kind$(if ($f.DriveType -eq 'Removable') { ': unplugging it stops the run' })" ''
+    }
+    # Paths stop at 260 characters unless Windows' long paths are on: the folder + 2 subfolder levels
+    # (channel, playlist) + a title of up to ~150 characters and the extension = folder + ~190
+    function Test-LongPaths([string]$dir, $enabled) {
+        if ("$enabled" -eq '1' -or $dir.Length + 190 -le 260) { return }
+        New-Check INFO 'long paths' "off, and this folder's path is $($dir.Length) characters: a long title in a subfolder can pass Windows' 260-character limit and fail to save" 'turn them on in an admin PowerShell: Set-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem LongPathsEnabled 1   (or use a shorter -Out)'
+    }
+    # Can a file be created here? Defender's Controlled folder access blocks unknown programs in Documents,
+    # Videos and Pictures, and the error then looks like a permission problem
+    function Get-CfaOn {
+        if ($env:YTDL_TEST_CFA) { return $env:YTDL_TEST_CFA -eq '1' }   # test hook
+        try { (Get-MpPreference -ErrorAction Stop).EnableControlledFolderAccess -eq 1 } catch { $false }
+    }
+    function Test-FolderWrite([string]$dir) {
+        $p = Join-Path $dir ".ytdl-write-test-$PID"
+        try { [IO.File]::WriteAllText($p, 'ytdl'); Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; return }
+        catch {
+            $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }
+            $denied = $e -is [UnauthorizedAccessException]
+            $fix = if ($denied -and (Get-CfaOn)) { "Windows Security's Controlled folder access is on: allow pwsh.exe (or powershell.exe), yt-dlp.exe and ffmpeg.exe under Virus & threat protection > Ransomware protection > Allow an app, or download elsewhere with -Out" }
+                   elseif ($denied) { 'check the folder''s permissions and that it isn''t read-only, or download elsewhere with -Out' } else { 'download elsewhere with -Out' }
+            New-Check FAIL 'write test' "can't create a file in this folder ($(Get-Short $e.Message 90))" $fix
+        }
+    }
+    # Why a browser's cookies may not be readable (shown only when the sign-in check didn't pass).
+    # -Browser takes yt-dlp's BROWSER[+KEYRING][:PROFILE] form.
+    function Test-BrowserCookies([string]$browser, [string[]]$running) {
+        $b = ($browser -split '[+:]')[0].ToLower()
+        $exe = @{ chrome = 'chrome'; edge = 'msedge'; brave = 'brave'; opera = 'opera'; vivaldi = 'vivaldi'; chromium = 'chromium' }[$b]
+        if (-not $exe) { return }
+        if ($running -contains $exe) { New-Check WARN 'cookies' "$b is open: Chromium browsers lock their cookie file while they run, so yt-dlp can't copy it" "close $b completely (also its tray icon), then try again; or sign in with -Browser firefox" }
+        if ($b -eq 'chrome') { New-Check WARN 'cookies' "Chrome 127 and later encrypt cookies so that only Chrome can read them; yt-dlp often can't" 'sign in to YouTube in Firefox and use -Browser firefox, or export a cookies.txt file and use -Cookies' }
+    }
+    # A cookies.txt file (Netscape format: domain, flag, path, secure, expiry, name, value; tab-separated)
+    function Test-CookiesFile([string]$path, [datetime]$now, [bool]$signOk) {
+        $fix = 'sign in to YouTube in the browser, export the file again, or use -Browser firefox'
+        $yt = @(foreach ($l in @(Get-Content -LiteralPath $path -ErrorAction SilentlyContinue)) {
+            $f = ($l -replace '^#HttpOnly_', '') -split "`t"
+            if ($f.Count -ge 7 -and $f[0] -match 'youtube\.com$' -and $f[4] -match '^\d+$') { [pscustomobject]@{ Name = $f[5]; Exp = [int64]$f[4] } } })
+        if (-not $yt.Count) { return (New-Check WARN 'cookies file' 'no youtube.com cookies in it (or not in the Netscape cookies.txt format)' $fix) }
+        $login = @($yt | Where-Object { $_.Name -in 'LOGIN_INFO', '__Secure-3PSID', '__Secure-1PSID', 'SID', 'SAPISID' })
+        if (-not $login.Count) { return (New-Check WARN 'cookies file' 'youtube.com cookies but no sign-in ones: it was exported while signed out' $fix) }
+        $exp = @($login | Where-Object { $_.Exp -gt 0 } | ForEach-Object Exp | Sort-Object) | Select-Object -Last 1   # 0 = ends with the browser session
+        if ($exp -and $exp -lt [DateTimeOffset]::new($now).ToUnixTimeSeconds()) { return (New-Check WARN 'cookies file' ('its sign-in cookies expired on {0:d MMM yyyy}' -f [DateTimeOffset]::FromUnixTimeSeconds($exp).LocalDateTime) $fix) }
+        $age = [int][math]::Floor(($now - (Get-Item -LiteralPath $path).LastWriteTime).TotalDays)
+        if ($age -gt 14) { return (New-Check $(if ($signOk) { 'INFO' } else { 'WARN' }) 'cookies file' "exported $age days ago: YouTube replaces sign-in cookies over time, so old exports stop working" 'export a fresh one if sign-in fails') }
+        New-Check OK 'cookies file' "$($login.Count) sign-in cookies, saved $age day(s) ago"
+    }
+    # One HEAD request to youtube.com: reachable? and this PC's clock against its Date header (seconds, + = ahead)
+    function Get-ClockSkew {
+        if ($env:YTDL_TEST_CLOCK) { if ($env:YTDL_TEST_CLOCK -eq 'none') { return $null }; return [double]$env:YTDL_TEST_CLOCK }   # test hook
+        try {
+            $q = [Net.WebRequest]::Create('https://www.youtube.com/'); $q.Method = 'HEAD'; $q.Timeout = 6000; $q.AllowAutoRedirect = $false
+            $resp = try { $q.GetResponse() } catch [Net.WebException] { if ($_.Exception.Response) { $_.Exception.Response } else { throw } }
+            $d = $resp.Headers['Date']; $resp.Close(); if (-not $d) { return $null }
+            ([datetime]::UtcNow - [DateTimeOffset]::Parse($d, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime).TotalSeconds
+        } catch { $null }
+    }
+    function Test-Clock($skew) {
+        if ($null -eq $skew) { return (New-Check WARN 'internet' "couldn't reach youtube.com" 'check the internet connection, a proxy or the firewall') }
+        $a = [math]::Abs([double]$skew)
+        if ($a -lt 120) { return (New-Check OK 'internet' ('youtube.com answers; the clock is within {0:N0} s of its time' -f [math]::Max(1, $a))) }
+        $by = if ($a -ge 5400) { '{0:N0} hours' -f ($a / 3600) } else { '{0:N0} minutes' -f ($a / 60) }
+        New-Check WARN 'clock' "this PC's clock is $by $(if ($skew -gt 0) { 'ahead of' } else { 'behind' }) YouTube's: sign-in and secure connections can fail" 'Settings > Time & language > Date & time > Sync now (or w32tm /resync in an admin shell)'
+    }
+    # Proxy, VPN and IPv6 facts (values are not shown, only the kind: they can hold addresses and logins)
+    function Get-NetFacts {
+        if ($env:YTDL_TEST_NET) { return ($env:YTDL_TEST_NET | ConvertFrom-Json) }   # test hook: {"Proxy":[...],"Vpn":[...],"IPv6":true}
+        $px = @(foreach ($n in 'HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY') { if ([Environment]::GetEnvironmentVariable($n)) { "$n set" } })
+        try { $is = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+              if ($is.ProxyEnable -eq 1 -and $is.ProxyServer) { $px += 'Windows proxy on' } elseif ($is.AutoConfigURL) { $px += 'Windows proxy script' } } catch { }
+        $vpn = @(try { Get-NetAdapter -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' -and "$($_.Name) $($_.InterfaceDescription)" -match 'WireGuard|TAP-Windows|OpenVPN|NordLynx|Wintun|ProtonVPN|Mullvad|Surfshark|ExpressVPN|AnyConnect|Fortinet|PANGP|GlobalProtect|WARP' } | ForEach-Object { $_.InterfaceDescription } } catch { })
+        $vpn += @(try { Get-VpnConnection -ErrorAction Stop | Where-Object ConnectionStatus -eq 'Connected' | ForEach-Object Name } catch { })
+        $v6 = try { [bool](@(Get-NetIPAddress -AddressFamily IPv6 -ErrorAction Stop | Where-Object { $_.IPAddress -match '^[23]' -and "$($_.AddressState)" -eq 'Preferred' }).Count) } catch { $false }
+        [pscustomobject]@{ Proxy = $px; Vpn = $vpn; IPv6 = $v6 }
+    }
+    function Test-ProxyVpn([string[]]$proxy, [string[]]$vpn, [string[]]$ytArgs) {
+        $all = @(@($vpn | Where-Object { $_ } | ForEach-Object { "VPN ($_)" }) + @($proxy | Where-Object { $_ }))
+        if ($ytArgs -contains '--proxy') { $all += 'yt-dlp --proxy' }
+        if (-not $all.Count) { return }
+        New-Check INFO 'VPN / proxy' "$($all -join '; '): YouTube asks for bot checks more often from shared VPN and proxy addresses" 'if runs hit bot checks, try without it, or sign in with -Browser'
+    }
+    function Test-IPv6([bool]$hasV6, [bool]$bot, [string[]]$ytArgs) {
+        if (-not ($hasV6 -and $bot) -or $ytArgs -contains '--force-ipv4' -or $ytArgs -contains '-4') { return }
+        New-Check INFO 'IPv6' 'this PC has IPv6 and the last run here hit bot checks: YouTube sometimes limits IPv6 addresses sooner' "try IPv4: -YtdlpArgs '--force-ipv4'"
+    }
+    # The scheduled sync. Task Scheduler's result codes in words (ytdl's own exit codes are 0, 1 and 75).
+    function Get-TaskResultText([int64]$code) {
+        if ($code -gt 2147483647) { $code -= 4294967296 }   # unsigned -> signed, like the hex literals below
+        switch ($code) {
+            0 { 'OK', 'finished' }
+            1 { 'OK', 'finished, some videos failed (see ytdl -Subscriptions)' }
+            75 { 'OK', 'stopped by the YouTube limit guard; the next run carries on' }
+            0x41301 { 'OK', 'running now' }
+            0x41303 { 'OK', 'not run yet' }
+            0x41306 { 'WARN', 'stopped by hand, or by the 12-hour limit' }
+            0x8004131F { 'WARN', 'skipped: the run before was still going' }
+            0x800710E0 { 'WARN', "skipped: Windows didn't start it (on battery, or the task's conditions weren't met)" }
+            0x80070002 { 'WARN', "failed: Windows couldn't find PowerShell or the ytdl script (moved or renamed?)" }
+            0xC000013A { 'WARN', 'stopped: its window was closed, or Windows signed out' }
+            default { 'WARN', ('ended with code 0x{0:X8}' -f [uint32]$(if ($code -lt 0) { $code + 4294967296 } else { $code })) }
+        }
+    }
+    function Get-TaskFacts([string]$name) {
+        if ($env:YTDL_TEST_TASK) { if ($env:YTDL_TEST_TASK -eq 'none') { return $null }; return ($env:YTDL_TEST_TASK | ConvertFrom-Json) }   # test hook
+        $tk = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue; if (-not $tk) { return $null }
+        $ti = $tk | Get-ScheduledTaskInfo; $s = $tk.Settings
+        [pscustomobject]@{ State = "$($tk.State)"; LastTaskResult = [int64]$ti.LastTaskResult
+            LastRunTime = $(if ($ti.LastRunTime -and $ti.LastRunTime.Year -gt 2000) { $ti.LastRunTime.ToString('s') } else { '' })
+            NextRunTime = $(if ($ti.NextRunTime) { $ti.NextRunTime.ToString('s') } else { '' })
+            DisallowStartIfOnBatteries = [bool]$s.DisallowStartIfOnBatteries; StopIfGoingOnBatteries = [bool]$s.StopIfGoingOnBatteries
+            WakeToRun = [bool]$s.WakeToRun; StartWhenAvailable = [bool]$s.StartWhenAvailable
+            HasBattery = $(try { [bool](@(Get-CimInstance Win32_Battery -ErrorAction Stop).Count) } catch { $false }) }
+    }
+    function Test-ScheduleTask($t) {
+        if (-not $t) { return (New-Check INFO 'schedule' 'no automatic sync (ytdl -Schedule daily sets one up)' '') }
+        $again = 'ytdl -Schedule daily -At 03:00 sets it up again'
+        $last = if ($t.LastRunTime) { ([datetime]$t.LastRunTime).ToString('ddd d MMM HH:mm') } else { '' }
+        $next = if ($t.NextRunTime) { ([datetime]$t.NextRunTime).ToString('ddd d MMM HH:mm') } else { '-' }
+        $st = 'OK'; $words = ''; if ($last) { $st, $words = Get-TaskResultText ([int64]$t.LastTaskResult) }
+        if ($t.State -eq 'Disabled') { $st = 'WARN' }
+        New-Check $st 'schedule' "$($t.State); $(if ($last) { "last run $last`: $words" } else { 'not run yet' }); next $next" $(if ($t.State -eq 'Disabled') { "turn it on in Task Scheduler, or $again" } else { $again })
+        if ($t.HasBattery -and ($t.DisallowStartIfOnBatteries -or $t.StopIfGoingOnBatteries)) { New-Check INFO 'schedule' "$(if ($t.DisallowStartIfOnBatteries) { "won't start" } else { 'stops' }) while the PC runs on battery" $again }
+        if (-not $t.WakeToRun -and -not $t.StartWhenAvailable) { New-Check INFO 'schedule' 'a sync missed while the PC sleeps or is off is skipped, not run later' "$again (it runs a missed sync when the PC is next on)" }
+    }
+    $docHead ="ytdl $YtdlVersion doctor  |  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     Microsoft.PowerShell.Utility\Write-Host $docHead -ForegroundColor Cyan
     # 1.26.0: ytdl itself against the latest release
     $docLatest = Get-LatestYtdl
@@ -1564,7 +1711,7 @@ if ($Doctor) {
     if ($pz -and $pn.Count) { Out-Check OK 'PO token' "bgutil $($pn[0].Name -replace '^server-', '') installed (used with -PoToken)" '' }
     else { Out-Check INFO 'PO token' 'not installed; ytdl -PoToken installs it on first use (needs deno)' '' }
     # Sign-in: -Browser/-Cookies given here, else the first subscription that uses one
-    $sb = $Browser; $sc = $Cookies; $from = 'given'
+    $sb = $Browser; $sc = $Cookies; $from = 'given'; $docSignOk = $false
     if (-not $sb -and -not $sc) { foreach ($x in @(Read-Subs)) { if ($x.Options.Browser) { $sb = $x.Options.Browser; $from = 'from your subscriptions'; break } elseif ($x.Options.Cookies) { $sc = $x.Options.Cookies; $from = 'from your subscriptions'; break } } }
     if (-not $sb -and -not $sc) { Out-Check INFO 'sign-in' 'not checked: add -Browser firefox (or -Cookies file) to test it' '' }
     elseif ($sc -and -not (Test-Path -LiteralPath $sc)) { Out-Check FAIL 'sign-in' "cookies file not found: $sc" 'export it again from your browser, or use -Browser' }
@@ -1578,9 +1725,18 @@ if ($Doctor) {
         if ($o -match 'not a bot|Sign in to confirm') { Out-Check FAIL 'sign-in' "$who`: YouTube asked to confirm you're not a bot" 'open youtube.com in that browser, check you are signed in, then try again' }
         elseif ($o -match 'cookies are no longer valid') { Out-Check FAIL 'sign-in' "$who`: YouTube says the cookies are no longer valid" 'sign in to YouTube again in that browser' }
         elseif ($o -match 'could not find|Failed to decrypt|Could not copy|database is locked|permission') { Out-Check FAIL 'sign-in' "$who`: couldn't read the browser's cookies ($(($o | Where-Object { $_ -match 'ERROR' } | Select-Object -First 1) -replace '^ERROR: ', ''))" 'close the browser (Chrome/Edge lock their cookies), or use -Browser firefox' }
-        elseif ($o -match '^jNQXAC9IVRw') { Out-Check OK 'sign-in' ("$who`: $(if ($nc) { "$nc cookies read, " })YouTube answered in {0:N1} s" -f $dt) }
+        elseif ($o -match '^jNQXAC9IVRw') { $docSignOk = $true; Out-Check OK 'sign-in' ("$who`: $(if ($nc) { "$nc cookies read, " })YouTube answered in {0:N1} s" -f $dt) }
         else { Out-Check WARN 'sign-in' "$who`: no answer from YouTube ($(($o | Where-Object { $_ -match 'ERROR' } | Select-Object -First 1) -replace '^ERROR: ', ''))" 'check the internet connection; re-run ytdl -Doctor' }
     }
+    # 1.27.0: why a browser's or a file's cookies may not work; the network (one HEAD to youtube.com), VPN/proxy
+    if ($sb -and -not $docSignOk) {
+        $docProcs = if ($env:YTDL_TEST_PROCS) { @($env:YTDL_TEST_PROCS -split ',') } else { @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object ProcessName) }
+        Test-BrowserCookies $sb $docProcs | Out-Checks
+    }
+    if ($sc -and (Test-Path -LiteralPath $sc)) { Test-CookiesFile $sc (Get-Date) $docSignOk | Out-Checks }
+    Test-Clock (Get-ClockSkew) | Out-Checks
+    $docNet = Get-NetFacts; $docYtArgs = @($userNetArgs) + @($userDlArgs)
+    Test-ProxyVpn @($docNet.Proxy) @($docNet.Vpn) $docYtArgs | Out-Checks
     $qn = @(Read-QueueRaw).Count; if ($qn) { Out-Check INFO 'queue' "$qn link(s) waiting for a download to finish (ytdl -Queue)" '' }   # 1.20.0
     $tb = Get-ToastBlock   # 1.18.1
     if ($Notify -eq 'off') { Out-Check INFO 'notifications' 'off (-Notify off)' '' }
@@ -1594,6 +1750,11 @@ if ($Doctor) {
         $st = if ($free -lt $MinFreeGB) { 'FAIL' } elseif ($free -lt [math]::Max(10, $MinFreeGB * 5)) { 'WARN' } else { 'OK' }
         Out-Check $st 'disk' ('{0:N1} GB free on {1} (runs stop below {2} GB)' -f $free, $drv, $MinFreeGB) 'free some space, or download elsewhere with -Out'
     } catch { Out-Check WARN 'disk' "can't read the free space of $Out" '' }
+    # 1.27.0: the drive type, long paths, and whether a file can be created in the folder
+    Test-FolderType (Get-FolderFacts $Out) | Out-Checks
+    $docLp = if ($env:YTDL_TEST_LONGPATHS) { $env:YTDL_TEST_LONGPATHS } else { try { (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -ErrorAction Stop).LongPathsEnabled } catch { 0 } }
+    Test-LongPaths ([IO.Path]::GetFullPath($Out)) $docLp | Out-Checks
+    if ($outExists) { Test-FolderWrite $Out | Out-Checks }
     # 1.25.0: the limit guard (whole PC)
     $gp = Read-GlobalPace
     if ((Get-BreakerLeft $gp) -gt 0) { Out-Check FAIL 'limit guard' ((Get-BreakerText $gp) -replace '^YouTube limit guard: ', '') 'wait for that time; signing in (-Browser) can help once it has passed' }
@@ -1614,7 +1775,7 @@ if ($Doctor) {
         elseif (Test-Path $li) { Out-Check INFO 'running' "nothing is running here (a run that was closed or crashed left a note: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' '))" 'nothing to do: the next run replaces it' }
         # 1.26.0: how the last run here ended, and unfinished download files
         $docLast = Get-LastRun (Join-Path $Out '.ytdl-logs') $docHeld
-        if ($docLast) { Out-Check $docLast.State 'last run' $docLast.Text $docLast.Fix }
+        if ($docLast) { Out-Check $docLast.State 'last run' $docLast.Text $docLast.Fix; Test-IPv6 $docNet.IPv6 $docLast.Bot $docYtArgs | Out-Checks }
         $docParts = @(Get-PartialFiles $Out)
         if ($docParts.Count) {
             $pgb = ($docParts | Measure-Object Length -Sum).Sum / 1GB
@@ -1629,14 +1790,7 @@ if ($Doctor) {
     if ($subList.Count) {
         $failing = @($subList | Where-Object { $_.LastExit -and [int]$_.LastExit -ne 0 })
         Out-Check $(if ($failing.Count) { 'WARN' } else { 'OK' }) 'subscriptions' "$($subList.Count) saved$(if ($failing.Count) { ", $($failing.Count) ended with errors last sync" })" 'see ytdl -Subscriptions, and the failed-videos list in that folder'
-        $tk = Get-ScheduledTask -TaskName $subTask -ErrorAction SilentlyContinue
-        if (-not $tk) { Out-Check INFO 'schedule' 'no automatic sync (ytdl -Schedule daily sets one up)' '' }
-        else {
-            $ti = $tk | Get-ScheduledTaskInfo
-            $res = [int]$ti.LastTaskResult; $last = if ($ti.LastRunTime -and $ti.LastRunTime.Year -gt 2000) { $ti.LastRunTime.ToString('ddd d MMM HH:mm') } else { 'never' }
-            $st = if ($tk.State -eq 'Disabled') { 'WARN' } elseif ($last -ne 'never' -and $res -notin 0, 1, 267009, 267011) { 'WARN' } else { 'OK' }
-            Out-Check $st 'schedule' "$($tk.State); last run $last (result $res); next $(if ($ti.NextRunTime) { $ti.NextRunTime.ToString('ddd d MMM HH:mm') } else { '-' })" 'ytdl -Schedule daily -At 03:00 sets it up again'
-        }
+        Test-ScheduleTask (Get-TaskFacts $subTask) | Out-Checks   # 1.27.0: result codes in words, settings
     } else { Out-Check INFO 'subscriptions' 'none (ytdl <channel url> -Subscribe adds one)' '' }
     Microsoft.PowerShell.Utility\Write-Host ''
     $docSum = if ($script:docBad) { "$($script:docBad) problem(s) found; the fix is under each one." } elseif ($script:docWarn) { "Works, with $($script:docWarn) thing(s) worth a look." } else { 'Everything ytdl needs is in order.' }

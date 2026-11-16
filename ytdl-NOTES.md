@@ -1,10 +1,10 @@
-# ytdl 1.26.1 — Changelog & Logic Notes
+# ytdl 1.27.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.26.1 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.27.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -168,7 +168,7 @@ The `.bak` files above are in `ytdl-project\backups\`.
 | `-History [N]` | 20 | List the last N downloads (date, height, size on disk or "deleted", title, folder); `-Match` filters titles. Recorded in `%LOCALAPPDATA%\ytdl\history.tsv` from 1.23.0 on |
 | `-Feed` / `-FeedBase <url>` | off | Subscription option: after each `-Sync`, write a podcast feed (`feed.xml`, RSS 2.0) of the files still in the folder. `-FeedBase` = the web address the folder is served at (implies `-Feed`); without it the links are `file:///`. 1.23.0 |
 | `-IgnoreCooldown` | off | Start even while the YouTube limit guard is on (1.25.0). The guard still records new limits. |
-| `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0). Also ytdl's own version, copies of a tool on PATH, the last run, unfinished files (1.26.0) |
+| `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0). Also ytdl's own version, copies of a tool on PATH, the last run, unfinished files (1.26.0). The drive (network, OneDrive, FAT32, exFAT), long paths, a write test, why cookies may not load, the clock and reachability, VPN/proxy, IPv6 after bot checks, and the schedule's result in words and its settings (1.27.0) |
 | `-Report` | — | With `-Doctor` (or alone): save the results to a text file on the Desktop with links, logins, user, PC and profile names hidden, and copy it for a GitHub issue (1.26.0) |
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
@@ -179,6 +179,20 @@ The `.bak` files above are in `ytdl-project\backups\`.
 
 ## Changelog
 
+### 1.27.0 — `-Doctor`: drive, cookies, network and schedule checks (2026-11-16)
+| Check | Detail |
+|---|---|
+| **drive** | WARN for a network drive or UNC path (slow merges, a dropped link breaks the file being written), a folder inside OneDrive (uploads while writing, Files On-Demand can move finished videos online), and FAT/FAT32 (4 GB file limit). INFO for exFAT (no journal) and removable drives. Works when the folder doesn't exist yet |
+| **long paths** | INFO when Windows long paths are off and the folder is long enough (path + ~190 characters for channel/playlist subfolders and a title) to pass 260; gives the admin `Set-ItemProperty ... LongPathsEnabled 1` command |
+| **write test** | Creates and deletes `.ytdl-write-test-<pid>` in an existing folder. FAIL when it can't; on access denied with Defender's Controlled folder access on, the fix names the Allow-an-app setting for pwsh.exe, yt-dlp.exe and ffmpeg.exe |
+| **cookies** | Only when sign-in didn't pass: a Chromium browser that is open (its cookie file is locked) and Chrome 127+'s app-bound encryption, with -Browser firefox or -Cookies as the fix. A `-Cookies` file: no youtube.com cookies, no sign-in cookies (exported signed out), expired, or 15+ days old (WARN if sign-in failed, else INFO) |
+| **internet / clock** | One HEAD request to youtube.com (6 s timeout): WARN when unreachable, WARN when the clock is 2+ minutes off its Date header (sign-in and TLS can fail), with Sync now / `w32tm /resync` |
+| **VPN / proxy** | INFO when a VPN adapter (WireGuard, OpenVPN, NordLynx, Mullvad, ...) or a Windows/env/`--proxy` proxy is on: shared addresses get more bot checks. Only the kind is shown, never addresses or logins |
+| **IPv6** | INFO `-YtdlpArgs '--force-ipv4'` when the PC has a global IPv6 address and the last run hit bot checks |
+| **schedule** | Task Scheduler result codes in words (finished, some failed, limit guard 75, running, not run yet, stopped, skipped while still running, refused on battery, script not found, window closed; others in hex, read as unsigned). INFO when a task changed by hand won't start (or stops) on battery on a PC with a battery, or skips runs missed while asleep |
+| **Code** | Each check is a `Test-*` judge fed facts by a `Get-*` gatherer (`New-Check`, `Out-Checks`). Test hooks: YTDL_TEST_FS, _LONGPATHS, _CFA, _PROCS, _CLOCK, _NET, _TASK. `Get-LastRun` results carry `Bot` |
+
+**Verified:** tests\v1.27.0.ps1 90/90 (offline: each check fed fake facts, a real write test incl. a denied folder, cookie files, task codes, two full -Doctor runs with the hooks); tests\v1.26.1.ps1 18/18 and v1.26.0.ps1 43/43 with versions set to 1.27.0. A real -Doctor run takes ~3 s.
 ### 1.26.1 — fix: `-AutoUpdate` uses the right updater (2026-11-16)
 | Change | Detail |
 |---|---|
