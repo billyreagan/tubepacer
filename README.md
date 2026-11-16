@@ -99,7 +99,44 @@ tubepacer finds these tools on `PATH` or in winget's install folders and caches 
 </details>
 
 > [!TIP]
-> Run `ytdl -Doctor` whenever something looks wrong. It checks yt-dlp, ffmpeg, deno, sign-in, free space, pacing and the schedule, flags duplicate copies on PATH, leftover unfinished files and an outdated ytdl, says how the last run ended, catches a folder that can't be written to or sits on a network drive, in OneDrive or on FAT32, cookies a browser won't give up, a wrong clock, a VPN and a schedule that skips runs, and gives the fix for each problem in the way you installed it. `ytdl -Doctor <video link>` also checks that one video with a single request: whether it can be downloaded and why not (private, members-only, age-restricted, region-blocked, removed, not started yet, a bot check), the best quality on offer against your `-Quality`, whether this folder already has it, and the command to get it. To ask for help, `ytdl -Report` saves the same check (personal details hidden) and opens the way to a new issue. `ytdl -Doctor -Fix` makes the fixes it can (install or update a tool through its manager, remove an extra copy, delete leftovers, set up the schedule again), asking before each one, then checks again.
+> Something looks wrong? Run `ytdl -Doctor`, then `ytdl -Doctor -Fix`. See [The doctor](#the-doctor).
+
+## The doctor
+
+One command checks the whole setup in about 3 seconds and says what to do about each problem. Another makes the fixes for you.
+
+```powershell
+ytdl -Doctor                      # check everything
+ytdl -Doctor "https://youtu.be/VIDEO_ID" # why won't this one video download?
+ytdl -Doctor -Fix                 # make the fixes it can, asking first
+ytdl -Report                      # save the check for a bug report
+```
+
+**`ytdl -Doctor` checks:**
+
+| Area | What it catches |
+|---|---|
+| Tools | yt-dlp, ffmpeg and deno missing or old; **two copies on PATH** (which one runs and how to remove the other); an outdated ytdl (checked against the latest release once a day) |
+| Sign-in | Cookies that fail; a Chromium browser holding its cookie file open; Chrome 127+ app-bound encryption; a `-Cookies` file with no sign-in cookies, expired or 15+ days old |
+| Folder and drive | No write access (names Defender's Controlled folder access when that's the cause); network drives, **OneDrive** and FAT32 (4 GB limit); paths that will pass 260 characters; free space; unfinished files (WARN at 1 GB, with the delete command) |
+| Network | YouTube not reachable; **a clock 2+ minutes off** (breaks sign-in); a VPN or proxy (more bot checks); IPv6 after bot checks (`--force-ipv4`) |
+| Pacing | The breaker, this hour's budget and the folder's saved level |
+| Last run and schedule | How the newest run ended, in words (finished, stopped, stopped by the limit guard, refused an option, first error); the scheduled sync's result in words, and a task that skips runs, won't run on battery or points at another ytdl |
+
+Every fix matches how the tool was installed: Scoop, winget (with the right package id), pip, pipx or Chocolatey.
+
+**`ytdl -Doctor <video link>`** checks one video with a single request, counted in the hourly budget and skipped while the breaker is open. It says whether the video can be downloaded and, if not, why in words: private, members-only, age-restricted, Premium, region-blocked, removed, not started yet (with the start time), a bot check or a needed PO token, each with its fix. It also shows the best quality on offer against your `-Quality` (or the best audio with `-AudioOnly`), catches the 360p-only reply, says whether this folder already has the video, and prints the command to get it.
+
+**`ytdl -Doctor -Fix`** lists the fixes it can make, shows the exact command for each, and asks before each one (the default is no):
+
+- install or update yt-dlp, ffmpeg or deno through the manager it came from, or update tubepacer through Scoop
+- uninstall an extra copy through its own manager (never the copy that runs, never hand-copied files)
+- delete a leftover lock note, unfinished files or a stale release-check file
+- set up a scheduled sync again when it is off, failing, skipping runs or pointing elsewhere
+
+It never does anything that needs admin and deletes only inside the download folder and ytdl's own state folder. Afterwards it runs the check again. `-Fix -Yes` runs only the safe fixes, without asking.
+
+**`ytdl -Report`** saves the check, plus Windows version, install method and console encoding, to `Desktop\ytdl-doctor-<time>.txt`. It copies the file to the clipboard and prints the new-issue link. Links, video titles, account options and user and PC names are hidden.
 
 ## What tubepacer does that others don't
 
@@ -114,6 +151,7 @@ Measured on one Windows PC and home connection; every run, script and raw result
 | **Catches YouTube's silent 360p replies.** | Re-asks and continues; 3 of 3 caught (release test) | yt-dlp saves 360p silently; ytdl-sub detects and stops |
 | **Pause and resume in place.** | `P` in the window or `-Pause` from any terminal | Stop and restart |
 | **One speed cap for the whole run**, shared by parallel downloads. | `-LimitRate 5M` | Per-stream caps |
+| **Diagnoses and fixes its own setup** ([how](#the-doctor)). | `-Doctor`: the whole setup in ~3 s; `-Doctor <url>` explains one video in one request; `-Fix` repairs, asking first; `-Report` for issues (263 release-test checks, 1.26–1.29) | yt-dlp `-v` prints versions and a debug log, with no checks or fixes |
 | **Native Windows.** No Docker, Python or server. | One zip + `winget` | Self-hosted archivers (Pinchflat, TubeArchivist, MeTube, Youtarr) need Docker |
 
 Also measured: 1.64× faster than yt-dlp on a 12-video 1080p batch (E1); 1,026 archive videos in five runs, signed in, 0 failed; yt-dlp start-up 1.0 s → 0.33 s; 1,036 missed thumbnail lookups per season → 0.
