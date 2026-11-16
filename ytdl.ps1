@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.28.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.29.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -20,6 +20,7 @@
   ytdl "<url>" -YtdlpArgs '--proxy socks5://127.0.0.1:9050 --limit-rate 5M'   # any other yt-dlp option
   ytdl -Doctor -Browser firefox   # check tools, sign-in, disk, pacing and the schedule
   ytdl -Doctor -Report            # the same, saved as a text file for a bug report (names and links hidden)
+  ytdl -Doctor -Fix               # make the fixes it can, asking first (-Fix -Yes: only the safe ones, no questions)
   ytdl -Version
 #>
 [CmdletBinding()]
@@ -242,6 +243,12 @@ param(
     # user, PC, folder names and links hidden, and copy it to the clipboard
     [switch]$Report,
 
+    # 1.29.0: with -Doctor (implies it): offer the fixes ytdl can make itself (update or install yt-dlp, ffmpeg,
+    # deno; remove an extra copy; delete leftover files; set up the scheduled sync again), asking for each one,
+    # then check again. -Fix -Yes runs the safe ones without asking (removing and deleting always ask)
+    [switch]$Fix,
+    [switch]$Yes,
+
     # Print the ytdl version and exit
     [switch]$Version,
 
@@ -278,8 +285,8 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.28.0'
-if ($Report) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report
+$YtdlVersion = '1.29.0'
+if ($Report -or $Fix) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report; 1.29.0: -Fix too
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -1455,6 +1462,7 @@ if ($Doctor) {
         $flag = if ($tool -eq 'ffmpeg') { '-version' } else { '--version' }
         $vs = @(foreach ($x in $c) { $vv = "$(& $x $flag 2>$null | Select-Object -First 1)" -replace '^(?:ffmpeg version|deno) (\S+).*', '$1'; "$x ($(if ($vv.Trim()) { $vv.Trim() } else { "doesn't start" }))" })
         Out-Check WARN "$tool copies" "$($c.Count) on PATH, the first one runs: $($vs -join '; ')" "remove the one you don't use, e.g. $(Get-RemoveHint $tool $c[1]), so updates reach the copy that runs"
+        Get-CopyFix $tool $c | Add-DocFix   # 1.29.0
     }
     # 1.26.0: the latest tubepacer release on GitHub, asked at most once a day (cached in the state folder)
     function Get-LatestYtdl {
@@ -1525,6 +1533,99 @@ if ($Doctor) {
         & $w '/-' -ForegroundColor Green -NoNewline
         & $w (' ' + [string][char]0x25B6 + '  ') -ForegroundColor White -NoNewline
         & $w $msg -ForegroundColor Green
+    }
+    # ---- 1.29.0: -Fix. A check that can repair its problem registers a fix: what it does (Text), the command
+    # shown (Cmd), and whether -Yes may run it without asking (Safe). Kinds: install/update (the tool's own
+    # manager), remove (an extra copy, by its manager; never one that shares the running copy's package), delete
+    # (files inside the download folder or ytdl's state folder only), task (ytdl -Schedule again). Nothing that
+    # needs admin (Chocolatey) is offered. YTDL_TEST_FIX=print: Invoke-DocFix returns the command, runs nothing;
+    # YTDL_TEST_ANSWERS=y,n,... answers the questions in order.
+    $script:docFixes = New-Object 'Collections.Generic.List[object]'
+    function New-DocFix([string]$kind, [string]$text, [string]$cmd, [bool]$safe, [hashtable]$more = @{}) {
+        $o = [ordered]@{ Kind = $kind; Text = $text; Cmd = $cmd; Safe = $safe }; foreach ($k in $more.Keys) { $o[$k] = $more[$k] }; [pscustomobject]$o
+    }
+    function Add-DocFix { foreach ($f in @($input)) { if ($f) { $script:docFixes.Add($f) } } }
+    # A manager command line (from Get-InstallHint / Get-RemoveHint) as program + arguments, non-interactive
+    function Get-ManagerCall([string]$hint, [string]$path) {
+        $w = @($hint -split ' ')
+        switch -Wildcard ($hint) {
+            'scoop *'            { @{ Exe = 'scoop'; Args = @($w | Select-Object -Skip 1) } }
+            'pipx *'             { @{ Exe = 'pipx'; Args = @($w | Select-Object -Skip 1) } }
+            'winget install *'   { @{ Exe = 'winget'; Args = @('install', '--id', $w[2], '-e', '--accept-source-agreements', '--accept-package-agreements', '--disable-interactivity') } }
+            'winget uninstall *' { @{ Exe = 'winget'; Args = @('uninstall', '--id', $w[2], '-e', '--accept-source-agreements', '--disable-interactivity') } }
+            'python -m pip uninstall *' { $py = if ($path) { Join-Path (Split-Path (Split-Path $path)) 'python.exe' } else { '' }
+                                          @{ Exe = $(if ($py -and (Test-Path -LiteralPath $py)) { $py } else { 'python' }); Args = @('-m', 'pip', 'uninstall', '-y', $w[-1]) } }
+            default { $null }
+        }
+    }
+    # A missing tool: install it; an old one: update the copy that runs (path '' = not installed)
+    function Get-ToolFix([string]$tool, [string]$path, [bool]$scoop) {
+        if (-not $path) { $h = Get-InstallHint $tool $scoop; $c = Get-ManagerCall $h ''; return (New-DocFix install "install $tool" $h $true @{ Exe = $c.Exe; Args = $c.Args }) }
+        $h = Get-UpdateHint $tool $path; if ($h -like 'choco *') { return }   # needs admin: the hint stays a step for the user
+        New-DocFix update "update $tool" $h $true @{ Tool = $tool; Path = $path }
+    }
+    # Extra copies of a tool (copies[0] runs): each one a manager installed, unless removing it would remove the running copy too
+    function Get-CopyFix([string]$tool, [string[]]$copies) {
+        for ($i = 1; $i -lt $copies.Count; $i++) {
+            $p = $copies[$i]
+            if ($p -notmatch '\\scoop\\|\\pipx\\|\\Python[^\\]*\\Scripts\\|\\WinGet\\Packages\\') { continue }   # copied by hand: not ours to delete
+            $h = Get-RemoveHint $tool $p
+            if ($h -eq (Get-RemoveHint $tool $copies[0])) { continue }   # same package as the copy that runs
+            $c = Get-ManagerCall $h $p; if (-not $c) { continue }
+            New-DocFix remove "remove the extra $tool copy $p (kept: $($copies[0]))" $h $false @{ Exe = $c.Exe; Args = $c.Args }
+        }
+    }
+    # The saved GitHub answer (latest-release.json) when it is over a day old (GitHub couldn't be asked again) or unreadable
+    function Get-ReleaseCacheFix([string]$cf, [datetime]$now) {
+        if (-not (Test-Path -LiteralPath $cf)) { return }
+        $c = try { Get-Content -LiteralPath $cf -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
+        $when = try { [datetime]$c.Checked } catch { $null }
+        if ($c.Tag -and $when -and ($now - $when).TotalHours -lt 24) { return }
+        New-DocFix delete "delete ytdl's saved answer from GitHub ($(if ($when) { "from $($when.ToString('d MMM HH:mm')), expired" } else { "can't be read" }))" "Remove-Item '$cf'" $true @{ Paths = @($cf) }
+    }
+    # The scheduled sync, set up again with its own times (ytdl -Schedule): when it is off (asks first: it may be
+    # off on purpose), can't find its script, runs another ytdl script, skips missed syncs, or skips on battery
+    function Get-TaskFix($t, [string]$self) {
+        if (-not $t) { return }
+        $c = [int64]$t.LastTaskResult; if ($c -gt 2147483647) { $c -= 4294967296 }
+        $why = @()
+        if ($t.State -eq 'Disabled') { $why += 'it is turned off' }
+        if ($t.LastRunTime -and $c -eq 0x80070002) { $why += "Windows couldn't find its script" }
+        if ($self -and $t.Script -and $t.Script -ne $self) { $why += 'it runs another ytdl script' }
+        if (-not $t.WakeToRun -and -not $t.StartWhenAvailable) { $why += 'missed syncs are skipped' }
+        if ($t.HasBattery -and ($t.DisallowStartIfOnBatteries -or $t.StopIfGoingOnBatteries)) { $why += 'it skips syncs on battery' }
+        if (-not $why.Count) { return }
+        $kind = if ($t.Kind -eq 'hourly') { 'hourly' } else { 'daily' }; $at = if ("$($t.At)" -match '^\d{1,2}:\d\d$') { $t.At } else { '03:00' }
+        New-DocFix task "set up the scheduled sync again, $kind at $at ($($why -join '; '))" "ytdl -Schedule $kind -At $at" ($t.State -ne 'Disabled') @{ Kind2 = $kind; At = $at }
+    }
+    function Test-DocPathInside([string]$p, [string[]]$roots) {
+        $full = try { [IO.Path]::GetFullPath($p) } catch { return $false }
+        foreach ($r in $roots) { if ($r) { $rf = [IO.Path]::GetFullPath($r).TrimEnd('\'); if ($full.StartsWith($rf + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true } } }
+        $false
+    }
+    function Invoke-DocFix($f) {
+        $res = { param($ok, $msg) [pscustomobject]@{ Ok = [bool]$ok; Msg = "$msg" } }
+        $last = { param($lines) Get-Short "$(@(@($lines) | Where-Object { "$_".Trim() }) | Select-Object -Last 1)" 110 }
+        if ($env:YTDL_TEST_FIX -eq 'print') { return (& $res $true "would run: $($f.Cmd)") }
+        try {
+            switch ($f.Kind) {
+                'update' { $o = @(Invoke-ToolUpdate $f.Tool $f.Path); return (& $res ($LASTEXITCODE -eq 0) (& $last $o)) }
+                'delete' {
+                    $outside = @($f.Paths | Where-Object { -not (Test-DocPathInside $_ @($Out, $stateDir)) })
+                    if ($outside.Count) { return (& $res $false "refused: not inside the download folder or ytdl's state folder: $($outside[0])") }
+                    $gone = 0; foreach ($p in $f.Paths) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; $gone++ } }
+                    return (& $res $true "$gone file(s) deleted")
+                }
+                'task' { $o = @(& (Get-Process -Id $PID).Path -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath -Schedule $f.Kind2 -At $f.At 2>&1 | ForEach-Object { "$_" })
+                         return (& $res ($LASTEXITCODE -eq 0) (Get-Short "$($o | Select-Object -First 1)" 110)) }
+                default { $o = @(& $f.Exe @($f.Args) 2>&1 | ForEach-Object { "$_" }); return (& $res ($LASTEXITCODE -eq 0) (& $last $o)) }
+            }
+        } catch { & $res $false (Get-Short $_.Exception.Message 110) }
+    }
+    function Read-DocAnswer([string]$q) {
+        if ($null -eq $script:docAnswers -and $env:YTDL_TEST_ANSWERS) { $script:docAnswers = New-Object 'Collections.Generic.Queue[string]'; foreach ($a in $env:YTDL_TEST_ANSWERS -split ',') { $script:docAnswers.Enqueue($a.Trim()) } }
+        if ($null -ne $script:docAnswers) { $a = if ($script:docAnswers.Count) { $script:docAnswers.Dequeue() } else { 'n' }; Microsoft.PowerShell.Utility\Write-Host "$q $a"; return $a }
+        try { Microsoft.PowerShell.Utility\Read-Host $q } catch { '' }
     }
     # ---- 1.27.0: drive, folder, cookies, network and schedule checks. Each Test-* function judges the facts
     # it is given and returns check lines (New-Check); Get-* functions gather the facts (with test hooks), so
@@ -1660,9 +1761,12 @@ if ($Doctor) {
             NextRunTime = $(if ($ti.NextRunTime) { $ti.NextRunTime.ToString('s') } else { '' })
             DisallowStartIfOnBatteries = [bool]$s.DisallowStartIfOnBatteries; StopIfGoingOnBatteries = [bool]$s.StopIfGoingOnBatteries
             WakeToRun = [bool]$s.WakeToRun; StartWhenAvailable = [bool]$s.StartWhenAvailable
+            Kind = $(if ("$(@($tk.Triggers)[0].Repetition.Interval)" -eq 'PT1H') { 'hourly' } else { 'daily' })   # 1.29.0: for -Fix
+            At = $(try { ([datetime]@($tk.Triggers)[0].StartBoundary).ToString('HH:mm') } catch { '' })
+            Script = $(if ("$(@($tk.Actions)[0].Arguments)" -match '-File "([^"]+)"') { $Matches[1] } else { '' })
             HasBattery = $(try { [bool](@(Get-CimInstance Win32_Battery -ErrorAction Stop).Count) } catch { $false }) }
     }
-    function Test-ScheduleTask($t) {
+    function Test-ScheduleTask($t, [string]$self = '') {
         if (-not $t) { return (New-Check INFO 'schedule' 'no automatic sync (ytdl -Schedule daily sets one up)' '') }
         $again = 'ytdl -Schedule daily -At 03:00 sets it up again'
         $last = if ($t.LastRunTime) { ([datetime]$t.LastRunTime).ToString('ddd d MMM HH:mm') } else { '' }
@@ -1672,6 +1776,7 @@ if ($Doctor) {
         New-Check $st 'schedule' "$($t.State); $(if ($last) { "last run $last`: $words" } else { 'not run yet' }); next $next" $(if ($t.State -eq 'Disabled') { "turn it on in Task Scheduler, or $again" } else { $again })
         if ($t.HasBattery -and ($t.DisallowStartIfOnBatteries -or $t.StopIfGoingOnBatteries)) { New-Check INFO 'schedule' "$(if ($t.DisallowStartIfOnBatteries) { "won't start" } else { 'stops' }) while the PC runs on battery" $again }
         if (-not $t.WakeToRun -and -not $t.StartWhenAvailable) { New-Check INFO 'schedule' 'a sync missed while the PC sleeps or is off is skipped, not run later' "$again (it runs a missed sync when the PC is next on)" }
+        if ($self -and $t.Script -and $t.Script -ne $self) { New-Check WARN 'schedule' "it runs another ytdl script: $($t.Script)" "$again, so it runs this one ($self)" }   # 1.29.0
     }
     # ---- 1.28.0: ytdl -Doctor <url> checks one video: metadata only (yt-dlp -J --no-playlist), one request,
     # counted in the hourly budget and skipped while the limit guard is on. Get-VideoFacts asks (test hook
@@ -1765,21 +1870,24 @@ if ($Doctor) {
     elseif ([version]$docLatest -gt [version]$YtdlVersion) { Out-Check WARN 'ytdl' "$YtdlVersion installed; $docLatest is out" $(if ($docScoop) { 'scoop update tubepacer' } else { 'download it: https://github.com/billyreagan/tubepacer/releases/latest' }) }
     elseif ([version]$docLatest -lt [version]$YtdlVersion) { Out-Check OK 'ytdl' "$YtdlVersion (newer than the latest release, $docLatest)" '' }
     else { Out-Check OK 'ytdl' "$YtdlVersion, the latest release" '' }
+    if ($docLatest -and [version]$docLatest -gt [version]$YtdlVersion -and $docScoop) { New-DocFix scoop 'update ytdl (tubepacer) with Scoop' 'scoop update tubepacer' $true @{ Exe = 'scoop'; Args = @('update', 'tubepacer') } | Add-DocFix }   # 1.29.0
+    Get-ReleaseCacheFix (Join-Path $stateDir 'latest-release.json') (Get-Date) | Add-DocFix
     # yt-dlp
     $ytSrc = @(Get-ToolCopies 'yt-dlp') | Select-Object -First 1
     $v = if ($ytdlp) { "$(& $ytdlp --version 2>$null | Select-Object -First 1)".Trim() } else { '' }
-    if (-not $v) { Out-Check FAIL 'yt-dlp' 'not found or not starting' (Get-InstallHint 'yt-dlp' $docScoop) }
+    if (-not $v) { Out-Check FAIL 'yt-dlp' 'not found or not starting' (Get-InstallHint 'yt-dlp' $docScoop); if (-not $ytSrc) { Get-ToolFix 'yt-dlp' '' $docScoop | Add-DocFix } }
     else {
         $age = $null; if ($v -match '^(\d{4})\.(\d{2})\.(\d{2})') { $age = [int]((Get-Date) - (Get-Date -Year ([int]$Matches[1]) -Month ([int]$Matches[2]) -Day ([int]$Matches[3]))).TotalDays }
         $build = if ($ytdlp -eq $fastExe) { 'fast-starting build' } else { 'one-file build (starts ~0.7 s slower)' }
         $st = if ($null -ne $age -and $age -ge 60) { 'FAIL' } elseif ($null -ne $age -and $age -ge 30) { 'WARN' } else { 'OK' }
         $uh = Get-UpdateHint 'yt-dlp' $ytSrc
         Out-Check $st 'yt-dlp' "$v, $age days old, $build" "$uh$(if ($uh -notlike 'choco *') { '   (or run downloads with -AutoUpdate)' })"
+        if ($st -ne 'OK' -and $ytSrc) { Get-ToolFix 'yt-dlp' $ytSrc $docScoop | Add-DocFix }   # 1.29.0
     }
     Test-ToolCopies 'yt-dlp'
     # ffmpeg / ffprobe
     $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-    if (-not $ff) { Out-Check FAIL 'ffmpeg' 'not found (needed to merge video and audio, and for cover art)' (Get-InstallHint 'ffmpeg' $docScoop) }
+    if (-not $ff) { Out-Check FAIL 'ffmpeg' 'not found (needed to merge video and audio, and for cover art)' (Get-InstallHint 'ffmpeg' $docScoop); Get-ToolFix 'ffmpeg' '' $docScoop | Add-DocFix }
     else {
         $fv = "$(& $ff.Source -version 2>$null | Select-Object -First 1)" -replace '^ffmpeg version (\S+).*', '$1'
         $fp = Test-Path (Join-Path (Split-Path $ff.Source) 'ffprobe.exe')
@@ -1788,7 +1896,7 @@ if ($Doctor) {
     Test-ToolCopies 'ffmpeg'
     # deno (YouTube's JavaScript challenges)
     $dn = Get-Command deno -ErrorAction SilentlyContinue
-    if (-not $dn) { Out-Check WARN 'deno' 'not found: yt-dlp may get only some formats (often 360p) or none' (Get-InstallHint 'deno' $docScoop) }
+    if (-not $dn) { Out-Check WARN 'deno' 'not found: yt-dlp may get only some formats (often 360p) or none' (Get-InstallHint 'deno' $docScoop); Get-ToolFix 'deno' '' $docScoop | Add-DocFix }
     else { Out-Check OK 'deno' ("$(& $dn.Source --version 2>$null | Select-Object -First 1)" -replace '^deno ', '') }
     Test-ToolCopies 'deno'
     # 1.22.0: PO-token provider (only used with -PoToken)
@@ -1858,7 +1966,8 @@ if ($Doctor) {
         $li = Join-Path $Out '.ytdl.lock.info'
         $docHeld = Test-FolderLock $Out   # 1.26.0: the lock itself, not its note (a crash leaves the note behind)
         if ($docHeld) { Out-Check INFO 'running' "a run is using this folder: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' ')" '' }
-        elseif (Test-Path $li) { Out-Check INFO 'running' "nothing is running here (a run that was closed or crashed left a note: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' '))" 'nothing to do: the next run replaces it' }
+        elseif (Test-Path $li) { Out-Check INFO 'running' "nothing is running here (a run that was closed or crashed left a note: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' '))" 'nothing to do: the next run replaces it'
+                                   New-DocFix delete 'delete the note a closed or crashed run left (.ytdl.lock.info)' "Remove-Item '$li'" $true @{ Paths = @($li) } | Add-DocFix }   # 1.29.0
         # 1.26.0: how the last run here ended, and unfinished download files
         $docLast = Get-LastRun (Join-Path $Out '.ytdl-logs') $docHeld
         if ($docLast) { Out-Check $docLast.State 'last run' $docLast.Text $docLast.Fix; Test-IPv6 $docNet.IPv6 $docLast.Bot $docYtArgs | Out-Checks }
@@ -1866,7 +1975,8 @@ if ($Doctor) {
         if ($docParts.Count) {
             $pgb = ($docParts | Measure-Object Length -Sum).Sum / 1GB
             if ($docHeld) { Out-Check INFO 'unfinished' ('{0} download file(s), {1:N2} GB: the run in progress is using them' -f $docParts.Count, $pgb) '' }
-            else { Out-Check $(if ($pgb -ge 1) { 'WARN' } else { 'INFO' }) 'unfinished' ('{0} leftover download file(s), {1:N2} GB, oldest from {2:d MMM}: re-running the same link resumes them' -f $docParts.Count, $pgb, ($docParts | Sort-Object LastWriteTime | Select-Object -First 1).LastWriteTime) "or delete them: Get-ChildItem '$Out' -Recurse -File -Include *.part,*.part-Frag*,*.ytdl,*.temp.* | Remove-Item" }
+            else { Out-Check $(if ($pgb -ge 1) { 'WARN' } else { 'INFO' }) 'unfinished' ('{0} leftover download file(s), {1:N2} GB, oldest from {2:d MMM}: re-running the same link resumes them' -f $docParts.Count, $pgb, ($docParts | Sort-Object LastWriteTime | Select-Object -First 1).LastWriteTime) "or delete them: Get-ChildItem '$Out' -Recurse -File -Include *.part,*.part-Frag*,*.ytdl,*.temp.* | Remove-Item"
+                   New-DocFix delete ('delete the {0} leftover download file(s), {1:N2} GB (those downloads start over)' -f $docParts.Count, $pgb) "Get-ChildItem '$Out' -Recurse -File -Include *.part,*.part-Frag*,*.ytdl,*.temp.* | Remove-Item" $false @{ Paths = @($docParts | ForEach-Object FullName) } | Add-DocFix }   # 1.29.0: asks first
         }
         $ar = Join-Path $Out '.ytdl-archive.txt'
         Out-Check INFO 'folder' "$Out$(if (Test-Path $ar) { ": $(@(Get-Content $ar).Count) video(s) downloaded so far" } else { ' (nothing downloaded here yet)' })" ''
@@ -1899,13 +2009,42 @@ if ($Doctor) {
     if ($subList.Count) {
         $failing = @($subList | Where-Object { $_.LastExit -and [int]$_.LastExit -ne 0 })
         Out-Check $(if ($failing.Count) { 'WARN' } else { 'OK' }) 'subscriptions' "$($subList.Count) saved$(if ($failing.Count) { ", $($failing.Count) ended with errors last sync" })" 'see ytdl -Subscriptions, and the failed-videos list in that folder'
-        Test-ScheduleTask (Get-TaskFacts $subTask) | Out-Checks   # 1.27.0: result codes in words, settings
+        $docTask = Get-TaskFacts $subTask
+        Test-ScheduleTask $docTask $PSCommandPath | Out-Checks   # 1.27.0: result codes in words, settings
+        Get-TaskFix $docTask $PSCommandPath | Add-DocFix   # 1.29.0
     } else { Out-Check INFO 'subscriptions' 'none (ytdl <channel url> -Subscribe adds one)' '' }
     Microsoft.PowerShell.Utility\Write-Host ''
     $docSum = if ($script:docBad) { "$($script:docBad) problem(s) found; the fix is under each one." } elseif ($script:docWarn) { "Works, with $($script:docWarn) thing(s) worth a look." } else { 'Everything ytdl needs is in order.' }
     if ($script:docBad) { Microsoft.PowerShell.Utility\Write-Host $docSum -ForegroundColor Red }
     elseif ($script:docWarn) { Microsoft.PowerShell.Utility\Write-Host $docSum -ForegroundColor Yellow }
     else { Write-PulseMark $docSum }
+    # 1.29.0 -Fix: each fix with its command, asked one by one (-Yes: the safe ones run, the others are skipped),
+    # what happened, then the checks once more (with PATH as Windows has it now, so new installs are found;
+    # without the video link, so no second request for it). Without -Fix: one line saying how many it could make.
+    $w = 'Microsoft.PowerShell.Utility\Write-Host'; $fx = $script:docFixes.ToArray()
+    if (-not $Fix -and $fx.Count) { & $w "ytdl -Doctor -Fix can make $($fx.Count) of these fixes for you (it asks before each one)." -ForegroundColor Cyan }
+    if ($Fix -and -not $fx.Count) { & $w "-Fix: nothing here that ytdl can fix by itself$(if ($script:docBad -or $script:docWarn) { '; the steps under each problem are for you' })." -ForegroundColor DarkGray }
+    if ($Fix -and $fx.Count) {
+        & $w ''; & $w "Fixes ytdl can make: $($fx.Count)$(if ($Yes) { ' (-Yes: the safe ones run; removing and deleting are skipped, run -Fix without -Yes for those)' })" -ForegroundColor Cyan
+        $nDone = 0; $nFail = 0; $nSkip = 0; $n = 0
+        foreach ($f in $fx) {
+            $n++; & $w ('  {0}. {1}' -f $n, $f.Text); & $w ('     runs: {0}' -f $f.Cmd) -ForegroundColor DarkGray
+            $go = if ($Yes) { $f.Safe } else { "$(Read-DocAnswer '     do it? [y/N]')".Trim() -match '^(y|yes)$' }
+            if (-not $go) { $nSkip++; & $w "     skipped$(if ($Yes -and -not $f.Safe) { ': it asks first' })" -ForegroundColor DarkGray; continue }
+            $r = Invoke-DocFix $f
+            if ($r.Ok) { $nDone++; & $w "     done$(if ($r.Msg) { ": $($r.Msg)" })" -ForegroundColor Green }
+            else { $nFail++; & $w "     failed$(if ($r.Msg) { ": $($r.Msg)" })" -ForegroundColor Red }
+        }
+        & $w ''; & $w "Fixes: $nDone done, $nFail failed, $nSkip skipped." -ForegroundColor $(if ($nFail) { 'Yellow' } else { 'Cyan' })
+        if ($nDone -or $nFail) {
+            & $w ''; & $w 'Checking again:' -ForegroundColor Cyan
+            $env:PATH = (@([Environment]::GetEnvironmentVariable('Path', 'Machine'), [Environment]::GetEnvironmentVariable('Path', 'User'), $env:PATH) | Where-Object { $_ }) -join ';'
+            $again = @{}; foreach ($k in @($PSBoundParameters.Keys)) { if ($k -notin 'Fix', 'Yes', 'Url') { $again[$k] = $PSBoundParameters[$k] } }
+            $again['Doctor'] = [switch]$true
+            & $PSCommandPath @again   # its own exit ends only that run; -Report (if given) is written there, after the fixes
+            exit $LASTEXITCODE
+        }
+    }
     # 1.26.0 -Report: the results as a text file (and on the clipboard) for a GitHub issue, identifying parts hidden
     if ($Report) {
         $osName = try { $c = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop; "$($c.Caption) $($c.Version)" } catch { [Environment]::OSVersion.VersionString }

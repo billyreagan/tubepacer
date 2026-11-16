@@ -1,10 +1,10 @@
-# ytdl 1.28.0 — Changelog & Logic Notes
+# ytdl 1.29.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.28.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.29.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -121,7 +121,7 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `-History [N]` | 20 | List the last N downloads (date, height, size on disk or "deleted", title, folder); `-Match` filters titles. Recorded in `%LOCALAPPDATA%\ytdl\history.tsv` from 1.23.0 on |
 | `-Feed` / `-FeedBase <url>` | off | Subscription option: after each `-Sync`, write a podcast feed (`feed.xml`, RSS 2.0) of the files still in the folder. `-FeedBase` = the web address the folder is served at (implies `-Feed`); without it the links are `file:///`. 1.23.0 |
 | `-IgnoreCooldown` | off | Start even while the YouTube limit guard is on (1.25.0). The guard still records new limits. |
-| `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0). Also ytdl's own version, copies of a tool on PATH, the last run, unfinished files (1.26.0). The drive (network, OneDrive, FAT32, exFAT), long paths, a write test, why cookies may not load, the clock and reachability, VPN/proxy, IPv6 after bot checks, and the schedule's result in words and its settings (1.27.0). `-Doctor <video url>`: one video's check (1.28.0) |
+| `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0). Also ytdl's own version, copies of a tool on PATH, the last run, unfinished files (1.26.0). The drive (network, OneDrive, FAT32, exFAT), long paths, a write test, why cookies may not load, the clock and reachability, VPN/proxy, IPv6 after bot checks, and the schedule's result in words and its settings (1.27.0). `-Doctor <video url>`: one video's check (1.28.0). `-Fix`: makes the fixes it can, asking first (1.29.0) |
 | `-Report` | — | With `-Doctor` (or alone): save the results to a text file on the Desktop with links, logins, user, PC and profile names hidden, and copy it for a GitHub issue (1.26.0) |
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
@@ -132,6 +132,16 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.29.0 — `-Doctor -Fix`: the doctor makes the fixes it can (2026-11-16)
+| Part | Detail |
+|---|---|
+| **Flow** | Each check that has a fix registers it (text, the command shown, safe or not). `-Fix` (implies `-Doctor`) lists them numbered with "runs: <command>" and asks for each one ([y/N], default no). `-Fix -Yes` runs only the safe ones and skips the rest ("it asks first"). Then: done / failed / skipped per fix, a "Fixes: X done, Y failed, Z skipped." line, and if anything ran, "Checking again:" with PATH refreshed and the doctor run once more (that second run writes `-Report`). Without `-Fix`, the doctor says how many fixes it could make |
+| **Fixes** | ytdl outdated under Scoop: `scoop update tubepacer` (safe). yt-dlp, ffmpeg, deno missing: install through Scoop when present, else winget (safe). yt-dlp aged: update through the manager that installed it (safe; Chocolatey skipped, it needs admin). Extra copies: uninstall each extra through its own manager (Scoop, winget, pipx, pip), never the running copy's package, never hand-copied files (asks). Leftover lock note: delete (safe). Unfinished files: delete (asks). Expired or unreadable latest-release.json: delete (safe). Scheduled sync turned off, pointing at another ytdl script, failing with 0x80070002, skipping missed syncs or held back on battery: set it up again with `-Schedule <daily/hourly> -At <time>` from the task (safe, except turned off: asks) |
+| **Limits** | Nothing that needs admin. Deletes only inside the output folder and the state folder (`..` and same-prefix siblings refused). winget runs with its non-interactive flags, pip with `-y`. A missing program fails the fix, it doesn't stop the run |
+| **Schedule check** | New WARN when the task runs another ytdl script than this one |
+| **Code** | `New-DocFix`, `Add-DocFix`, `Get-ManagerCall`, `Get-ToolFix`, `Get-CopyFix`, `Get-ReleaseCacheFix`, `Get-TaskFix`, `Test-DocPathInside`, `Invoke-DocFix`, `Read-DocAnswer`; `Get-TaskFacts` adds Kind/At/Script. Test hooks: YTDL_TEST_FIX=print (says "would run", changes nothing), YTDL_TEST_ANSWERS=y,n,... |
+
+**Verified:** tests\v1.29.0.ps1 69/69 (offline: manager commands for install/update/remove, copy picking, cache age, task reasons and times, path limits, delete refused outside and done inside, print mode; full temp-folder runs: count without -Fix, y/n answers, -Yes skipping the unsafe one, real deletes, second pass, clean folder, all no, no answer). v1.28.0, v1.27.0, v1.26.1 pass except their version line; v1.26.0's 3 version-bound run checks fail the same on 1.28.0.
 ### 1.28.0 — `-Doctor <url>`: one video's check (2026-11-16)
 | Part | Detail |
 |---|---|
