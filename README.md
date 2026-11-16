@@ -99,7 +99,7 @@ tubepacer finds these tools on `PATH` or in winget's install folders and caches 
 </details>
 
 > [!TIP]
-> Run `ytdl -Doctor` whenever something looks wrong. It checks yt-dlp, ffmpeg, deno, sign-in, free space, pacing and the schedule, flags duplicate copies on PATH, leftover unfinished files and an outdated ytdl, says how the last run ended, catches a folder that can't be written to or sits on a network drive, in OneDrive or on FAT32, cookies a browser won't give up, a wrong clock, a VPN and a schedule that skips runs, and gives the fix for each problem in the way you installed it. To ask for help, `ytdl -Report` saves the same check (personal details hidden) and opens the way to a new issue.
+> Run `ytdl -Doctor` whenever something looks wrong. It checks yt-dlp, ffmpeg, deno, sign-in, free space, pacing and the schedule, flags duplicate copies on PATH, leftover unfinished files and an outdated ytdl, says how the last run ended, catches a folder that can't be written to or sits on a network drive, in OneDrive or on FAT32, cookies a browser won't give up, a wrong clock, a VPN and a schedule that skips runs, and gives the fix for each problem in the way you installed it. `ytdl -Doctor <video link>` also checks that one video with a single request: whether it can be downloaded and why not (private, members-only, age-restricted, region-blocked, removed, not started yet, a bot check), the best quality on offer against your `-Quality`, whether this folder already has it, and the command to get it. To ask for help, `ytdl -Report` saves the same check (personal details hidden) and opens the way to a new issue.
 
 ## What tubepacer does that others don't
 
@@ -232,7 +232,7 @@ Option | What it does | Default
 :---|:---|:---
 `-Url URL` | Video, playlist or channel link. The first argument, so the name can be left out |
 `-Version` | Print the version and exit |
-`-Doctor` | Check yt-dlp, ffmpeg, deno, sign-in, free space, pacing and the schedule, plus duplicate copies on PATH, unfinished files (WARN at 1 GB), the ytdl version and how the last run ended, the drive and a write test, long paths, cookies, the clock, VPN/proxy, IPv6 and the schedule's result in words; print what is wrong and how to fix it (hints match how each tool was installed), then exit |
+`-Doctor` | Check yt-dlp, ffmpeg, deno, sign-in, free space, pacing and the schedule, plus duplicate copies on PATH, unfinished files (WARN at 1 GB), the ytdl version and how the last run ended, the drive and a write test, long paths, cookies, the clock, VPN/proxy, IPv6 and the schedule's result in words; with a video link, one request checks that video (available or why not, best format vs `-Quality`, already in the archive, a suggested command); print what is wrong and how to fix it (hints match how each tool was installed), then exit |
 `-Report` | Run the doctor and save its lines plus Windows version, install method and console encoding to `Desktop\ytdl-doctor-<time>.txt` with links, account options and user/PC names hidden; copy it to the clipboard and print the new-issue link |
 `-Estimate` | Scan the link and print the video count, total runtime and estimated download time; no download. With `-Sync`: show what is new |
 `-YtdlpArgs 'OPTIONS'` | Any other yt-dlp options, as one quoted string, e.g. `'--proxy socks5://127.0.0.1:9050'`. Connection options reach every yt-dlp call, the rest only the download. Options tubepacer manages itself are refused, with the name of its own option to use instead |

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.27.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.28.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -234,7 +234,8 @@ param(
     [switch]$ClearQueue,
 
     # 1.18.0: check yt-dlp, ffmpeg, deno, sign-in (with -Browser/-Cookies), free space, pacing, subscriptions
-    # and the schedule, print what's wrong and how to fix it, then exit
+    # and the schedule, print what's wrong and how to fix it, then exit. 1.28.0: ytdl -Doctor <video url> also
+    # checks that video (one metadata request): available or why not, the formats vs -Quality, the archive
     [switch]$Doctor,
 
     # 1.26.0: with -Doctor (implies it): also save the results as a text file for a bug report, with the
@@ -277,7 +278,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.27.0'
+$YtdlVersion = '1.28.0'
 if ($Report) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -1255,7 +1256,7 @@ if ($Add) {
     }
     Write-Host '[ytdl] No ytdl download is running, so this one starts now.' -ForegroundColor DarkGray
 }
-if (-not $Url -and -not $Doctor) { Write-Error "Usage: ytdl <url> [options]   |   ytdl -Sync   |   ytdl -Subscriptions   |   ytdl -Stop   |   ytdl -Doctor" }
+if (-not $Url -and -not $Doctor) { Write-Error "Usage: ytdl <url> [options]   |   ytdl -Sync   |   ytdl -Subscriptions   |   ytdl -Stop   |   ytdl -Doctor [<video url>]" }
 
 # 1.5.0: at 480p and below, transfer is only half of each video's time and a single download is
 # capped at ~10 MiB/s, so overlapping videos pays off most (360p benchmark: -Parallel 2/3/4 were
@@ -1419,10 +1420,10 @@ if (Test-Path -LiteralPath $fastExe) {
 # ---- 1.18.0: ytdl -Doctor ----------------------------------------------------------------------------
 # Everything a run depends on, checked the way a run uses it, with the fix for each problem. Online: the
 # sign-in check (one video, metadata only, ~3 s) and, at most daily, GitHub's latest tubepacer release
-# (1.26.0), and one HEAD request to youtube.com for reachability and the clock (1.27.0). Exit 0 = no problems, 1 = something failed. 1.26.0 -Report: the same results in a text file
+# (1.26.0), and one HEAD request to youtube.com for reachability and the clock (1.27.0); with a video link, one yt-dlp -J for it (1.28.0). Exit 0 = no problems, 1 = something failed. 1.26.0 -Report: the same results in a text file
 # (and the clipboard) with names, folders and links hidden, ready for a GitHub issue.
 if ($Doctor) {
-    $script:docBad = 0; $script:docWarn = 0; $script:docLines = New-Object 'Collections.Generic.List[string]'
+    $script:docBad = 0; $script:docWarn = 0; $script:docLines = New-Object 'Collections.Generic.List[string]'; $script:docHide = @()
     function Out-Check([string]$state, [string]$what, [string]$detail, [string]$fix) {
         $col = @{ OK = 'Green'; WARN = 'Yellow'; FAIL = 'Red'; INFO = 'DarkGray' }[$state]
         if ($state -eq 'FAIL') { $script:docBad++ } elseif ($state -eq 'WARN') { $script:docWarn++ }
@@ -1512,6 +1513,7 @@ if ($Doctor) {
         foreach ($pr in @(@($env:USERPROFILE, '~'), @($env:USERNAME, '<user>'), @($env:COMPUTERNAME, '<pc>'))) {
             if ("$($pr[0])".Length -ge 3) { $s = $s -ireplace [regex]::Escape($pr[0]), $pr[1] }
         }
+        foreach ($h in @($script:docHide)) { if ("$h".Length -ge 3) { $s = $s.Replace("$h", '<video>').Replace((Get-Short "$h" 60), '<video>') } }   # 1.28.0: the -Doctor <url> video
         $s
     }
     # 1.25.1: Pulse, the tubepacer mark, as one line when every check passes: a blue heartbeat,
@@ -1671,6 +1673,90 @@ if ($Doctor) {
         if ($t.HasBattery -and ($t.DisallowStartIfOnBatteries -or $t.StopIfGoingOnBatteries)) { New-Check INFO 'schedule' "$(if ($t.DisallowStartIfOnBatteries) { "won't start" } else { 'stops' }) while the PC runs on battery" $again }
         if (-not $t.WakeToRun -and -not $t.StartWhenAvailable) { New-Check INFO 'schedule' 'a sync missed while the PC sleeps or is off is skipped, not run later' "$again (it runs a missed sync when the PC is next on)" }
     }
+    # ---- 1.28.0: ytdl -Doctor <url> checks one video: metadata only (yt-dlp -J --no-playlist), one request,
+    # counted in the hourly budget and skipped while the limit guard is on. Get-VideoFacts asks (test hook
+    # YTDL_TEST_INFO = a file holding -J's JSON or yt-dlp's error text); Test-Video and Test-VideoArchive judge.
+    function Get-VideoFacts([string]$u, [string[]]$auth) {
+        $t0 = Get-Date; $js = $null; $err = @()
+        if ($env:YTDL_TEST_INFO) {   # test hook
+            $raw = [IO.File]::ReadAllText($env:YTDL_TEST_INFO)
+            if ($raw.TrimStart().StartsWith('{')) { $js = $raw } else { $err = @($raw -split "`r?`n" | Where-Object { $_ }) }
+        } else {
+            $lines = @(& $ytdlp @auth @userNetArgs --ignore-config --no-warnings -J --no-playlist $u 2>&1 | ForEach-Object { "$_" })
+            $js = $lines | Where-Object { $_.StartsWith('{') } | Select-Object -First 1
+            $err = @($lines | Where-Object { -not $_.StartsWith('{') })
+        }
+        $vi = $null; if ($js) { try { $vi = $js | ConvertFrom-Json -ErrorAction Stop } catch { } }
+        [pscustomobject]@{ Info = $vi; Err = $err; Sec = ((Get-Date) - $t0).TotalSeconds }
+    }
+    function Get-ShortSide($f) { if ($f.height -and $f.width) { [math]::Min([int]$f.height, [int]$f.width) } elseif ($f.height) { [int]$f.height } else { 0 } }
+    function Get-CodecName([string]$c) { switch -Regex ($c) { '^(avc|h264)' { 'H.264' } '^(vp0?9)' { 'VP9' } '^av01' { 'AV1' } '^(hev|hvc|h265)' { 'H.265' } default { ($c -split '\.')[0] } } }
+    function Test-Video($vf, [string]$u, [string]$quality, [bool]$audio, [bool]$signed, [datetime]$now) {
+        $in = if ($signed) { 'signed in' } else { 'signed out' }
+        $signIn = if ($signed) { '' } else { ' -Browser firefox' }
+        $base = "ytdl `"$u`"$(if ($quality -ne 'best') { " -Quality $quality" })$(if ($audio) { ' -AudioOnly' })"
+        $vi = $vf.Info
+        if (-not $vi) {
+            $e = "$(@(@($vf.Err | Where-Object { $_ -match '^ERROR' }) + @($vf.Err)) | Select-Object -First 1)" -replace '^ERROR:\s*(\[[^\]]+\]\s*)?([\w-]{11}:\s*)?', ''
+            $why = Get-Short $e 120
+            if ($e -match $limitPattern) {
+                if ($e -match $limit429Pattern) { return (New-Check FAIL 'video' "$in`: YouTube is rate-limiting this PC (HTTP 429)" 'wait an hour or more before downloading; ytdl''s limit guard paces the next run') }
+                return (New-Check FAIL 'video' "$in`: YouTube asked to confirm you're not a bot" $(if ($signed) { 'wait a while; open youtube.com in that browser and check you are signed in' } else { 'sign in: add -Browser firefox (or chrome/edge); or wait a while' }))
+            }
+            if ($e -match 'Private video') { return (New-Check FAIL 'video' "$in`: private; only the uploader and people they shared it with can watch it" $(if ($signed) { 'nothing to do unless the uploader shares it with this account' } else { 'if it was shared with you: add -Browser firefox' })) }
+            if ($e -match 'members-only|Join this channel|channel.s members') { return (New-Check FAIL 'video' "$in`: members-only (the channel's paid membership)" $(if ($signed) { 'this account is not a member of the channel' } else { 'if you are a member: add -Browser firefox' })) }
+            if ($e -match 'confirm your age|age.restricted|inappropriate for some users') { return (New-Check FAIL 'video' "$in`: age-restricted; YouTube needs a signed-in adult account" $(if ($signed) { 'confirm the account''s age on youtube.com (open the video there once)' } else { "sign in: $base -Browser firefox" })) }
+            if ($e -match 'Premium|requires payment|rent') { return (New-Check FAIL 'video' "$in`: needs YouTube Premium or a purchase" $(if ($signed) { 'this account has no access to it' } else { 'if your account has access: add -Browser firefox' })) }
+            if ($e -match 'in your country|geo.?restrict|blocked it in your country') { return (New-Check FAIL 'video' "$in`: not available in this country (region-blocked)" 'it can only be watched from countries the uploader allows') }
+            if ($e -match '(?:will begin|Premieres|starts) (in [^.]+)') { return (New-Check WARN 'video' "not started yet: it goes live $($Matches[1])" "$base -Live waits for it and records it") }
+            if ($e -match 'live event will begin|is upcoming|has not started') { return (New-Check WARN 'video' 'not started yet (a scheduled stream or premiere)' "$base -Live waits for it and records it") }
+            if ($e -match 'removed|terminated|no longer available|does not exist|Video unavailable') { return (New-Check FAIL 'video' "gone: $why" 'nothing to do: YouTube no longer has it') }
+            if ($e -match 'PO Token|po_token') { return (New-Check FAIL 'video' "$in`: YouTube wants a PO token for it" "$base -PoToken$signIn") }
+            if ($e -match 'Unsupported URL|is not a valid URL|Incomplete YouTube ID') { return (New-Check FAIL 'video' "yt-dlp doesn't read this link: $why" 'copy the link again from the address bar') }
+            if ($e -match 'Unable to download|timed out|getaddrinfo|Connection|SSL|resolve') { return (New-Check WARN 'video' "no answer from YouTube: $why" 'check the internet connection, then try again') }
+            return (New-Check WARN 'video' "$in`: yt-dlp couldn't read it: $(if ($why) { $why } else { 'no error text' })" 'update yt-dlp (see its line above), then try again')
+        }
+        $dur = if ($vi.duration) { $ts = [timespan]::FromSeconds([double]$vi.duration); if ($ts.TotalHours -ge 1) { '{0}:{1:mm\:ss}' -f [int][math]::Floor($ts.TotalHours), $ts } else { '{0:m\:ss}' -f $ts } } else { '' }
+        $avail = switch ("$($vi.availability)") { 'needs_auth' { 'sign-in only' } 'subscriber_only' { 'members-only' } 'premium_only' { 'Premium' } '' { '' } default { $_ } }
+        $what = "'$(Get-Short "$($vi.title)" 60)'$(if ($dur) { ", $dur" })$(if ($avail) { ", $avail" })"
+        switch ("$($vi.live_status)") {
+            'is_upcoming' {
+                $when = if ($vi.release_timestamp) { $lt = [DateTimeOffset]::FromUnixTimeSeconds([int64]$vi.release_timestamp).LocalDateTime; $lt.ToString($(if ($lt.Date -ne $now.Date) { 'ddd d MMM HH:mm' } else { 'HH:mm' })) } else { 'later' }
+                return (New-Check WARN 'video' "$what`: not started yet, goes live $(if ($when -ne 'later') { 'at ' })$when" "$base -Live waits for it and records it")
+            }
+            'is_live' { New-Check OK 'video' "$what`: live now ($in)" ''; New-Check INFO 'command' "$base -Live$signIn" ''; return }
+            'post_live' { New-Check WARN 'video' "$what`: the stream just ended; YouTube is still processing it" 'for a few hours only part of it, or a low quality, may download; try again later' }
+            default { New-Check OK 'video' "available ($in): $what" '' }
+        }
+        $fs = @($vi.formats | Where-Object { $_ -and "$($_.ext)" -ne 'mhtml' -and "$($_.format_note)" -notmatch 'storyboard' })
+        $vids = @($fs | Where-Object { $_.vcodec -and "$($_.vcodec)" -ne 'none' })
+        $auds = @($fs | Where-Object { $_.acodec -and "$($_.acodec)" -ne 'none' -and (-not $_.vcodec -or "$($_.vcodec)" -eq 'none') })
+        if ($audio) {
+            $ba = $auds | Sort-Object { [double]$_.abr } -Descending | Select-Object -First 1
+            if ($ba) { New-Check OK 'formats' ('best audio: {0}, {1:N0} kbps (-AudioOnly converts it to {2})' -f ($ba.acodec -split '\.')[0], [double]$ba.abr, $(if ($AudioFormat) { $AudioFormat } else { 'mp3' })) '' }
+            elseif ($vids.Count) { New-Check WARN 'formats' 'no audio-only format came back; ytdl takes the audio from a video file' '' }
+            else { New-Check FAIL 'formats' 'no formats came back' 'update yt-dlp and install deno (see above); if it stays, try -PoToken' }
+        } elseif (-not $vids.Count) {
+            New-Check FAIL 'formats' 'no video formats came back' 'update yt-dlp and install deno (see above); if it stays, try -PoToken'
+        } else {
+            $best = ($vids | ForEach-Object { Get-ShortSide $_ } | Measure-Object -Maximum).Maximum
+            $label = { param($h) $top = @($vids | Where-Object { (Get-ShortSide $_) -eq $h } | Sort-Object { [double]$_.fps } -Descending)[0]
+                       "$h" + 'p' + $(if ([double]$top.fps -gt 31) { [int]$top.fps } else { '' }) + " $(Get-CodecName "$($top.vcodec)")" }
+            $sep = @($vids | Where-Object { -not $_.acodec -or "$($_.acodec)" -eq 'none' }).Count
+            if (-not $sep -and $best -le 360) { New-Check WARN 'formats' "only $(& $label $best) as a single file came back: YouTube's JavaScript challenge probably failed" 'update yt-dlp and install deno (see above); if it stays, try -PoToken' }
+            elseif ($quality -eq 'best') { New-Check OK 'formats' "best on offer: $(& $label $best) (-Quality best gets it)" '' }
+            else {
+                $q = [int]$quality; $got = ($vids | ForEach-Object { Get-ShortSide $_ } | Where-Object { $_ -le $q } | Measure-Object -Maximum).Maximum
+                if ($best -lt $q) { New-Check INFO 'formats' "-Quality $q asked, but the best on offer is $(& $label $best): you get that" '' }
+                elseif ($got) { New-Check OK 'formats' "-Quality $q gets $(& $label $got) (best on offer: $(& $label $best))" '' }
+                else { New-Check INFO 'formats' "nothing at $q`p or below; you get the smallest there is" '' }
+            }
+        }
+        New-Check INFO 'command' "$base$(if ("$($vi.availability)" -in 'needs_auth', 'subscriber_only', 'premium_only') { $signIn })" ''
+    }
+    function Test-VideoArchive([string]$vid, [string[]]$ids, [string]$arch) {
+        if ($vid -and $vid -in $ids) { New-Check INFO 'archive' 'already downloaded into this folder: a run here skips it' "to get it again, use another -Out, or delete the line 'youtube $vid' from $arch" }
+    }
     $docHead ="ytdl $YtdlVersion doctor  |  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     Microsoft.PowerShell.Utility\Write-Host $docHead -ForegroundColor Cyan
     # 1.26.0: ytdl itself against the latest release
@@ -1785,6 +1871,29 @@ if ($Doctor) {
         $ar = Join-Path $Out '.ytdl-archive.txt'
         Out-Check INFO 'folder' "$Out$(if (Test-Path $ar) { ": $(@(Get-Content $ar).Count) video(s) downloaded so far" } else { ' (nothing downloaded here yet)' })" ''
     } else { Out-Check INFO 'folder' "$Out (doesn't exist yet; created on the first download)" '' }
+    # 1.28.0: ytdl -Doctor <url>: can this one video be downloaded, and how
+    if ($Url) {
+        $vid = if ($Url -notmatch 'youtube\.com/(@|channel/|c/|user/)' -and $Url -match '(?:[?&]v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})') { $Matches[1] } else { '' }
+        $vArch = Join-Path $Out $archName
+        $vIds = if (Test-Path -LiteralPath $vArch) { @(Get-Content -LiteralPath $vArch | ForEach-Object { ("$_" -split '\s+')[1] }) } else { @() }
+        $vIn = [bool]($Browser -or $Cookies); $vWho = if ($vIn) { 'In' } else { 'Out' }; $vMax = if ($vIn) { 1000 } else { 150 }
+        $vUsed = @($gp["Log$vWho"] | Where-Object { $_ -gt (Get-Epoch) - 3600 }).Count
+        if (-not $vid) { Out-Check INFO 'video' 'not checked: -Doctor <url> checks one video link (watch?v=..., youtu.be/..., shorts/...), not a playlist or channel' '' }
+        elseif (-not $v) { Out-Check INFO 'video' 'not checked: yt-dlp is missing (see above)' '' }
+        elseif ((Get-BreakerLeft $gp) -gt 0 -and -not $IgnoreCooldown) { Out-Check INFO 'video' 'not checked: the limit guard is on (see above); asking YouTube now could extend the block' 'wait for that time (-IgnoreCooldown checks anyway)' }
+        elseif ($vUsed -ge $vMax) { Out-Check INFO 'video' "not checked: this hour's budget is used ($vUsed of $vMax videos $(if ($vIn) { 'signed in' } else { 'signed out' }))" 'try again within the hour' }
+        else {
+            $null = Update-GlobalPace { param($g, $now) $g["Log$vWho"] = @($g["Log$vWho"]) + $now }   # one request, counted like a video start
+            $vAuth = if ($Browser) { @('--cookies-from-browser', $Browser) } elseif ($Cookies) { @('--cookies', $Cookies) } else { @() }
+            $vf = Get-VideoFacts $Url $vAuth
+            $vErr = $vf.Err -join "`n"
+            if (-not $vf.Info -and $vErr -match $limitPattern) { $null = Add-PaceEvent $(if ($vErr -match $limit429Pattern) { '429' } else { 'bot' }) 0 }
+            if ($vf.Info.title) { $script:docHide += "$($vf.Info.title)" }
+            Test-Video $vf $Url $Quality ([bool]$AudioOnly) $vIn (Get-Date) | Out-Checks
+        }
+        if ($vid) { $script:docHide += $vid }
+        Test-VideoArchive $vid $vIds $vArch | Out-Checks
+    }
     # Subscriptions and the schedule
     $subList = @(Read-Subs)   # not $subs: that is the -Subs switch (names ignore case)
     if ($subList.Count) {
