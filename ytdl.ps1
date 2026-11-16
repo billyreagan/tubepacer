@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.25.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.26.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -19,6 +19,7 @@
   ytdl -BrowserButton on -Quality 1080 -Browser firefox   # bookmark buttons: download/subscribe the open page
   ytdl "<url>" -YtdlpArgs '--proxy socks5://127.0.0.1:9050 --limit-rate 5M'   # any other yt-dlp option
   ytdl -Doctor -Browser firefox   # check tools, sign-in, disk, pacing and the schedule
+  ytdl -Doctor -Report            # the same, saved as a text file for a bug report (names and links hidden)
   ytdl -Version
 #>
 [CmdletBinding()]
@@ -236,6 +237,10 @@ param(
     # and the schedule, print what's wrong and how to fix it, then exit
     [switch]$Doctor,
 
+    # 1.26.0: with -Doctor (implies it): also save the results as a text file for a bug report, with the
+    # user, PC, folder names and links hidden, and copy it to the clipboard
+    [switch]$Report,
+
     # Print the ytdl version and exit
     [switch]$Version,
 
@@ -272,7 +277,8 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.25.0'
+$YtdlVersion = '1.26.0'
+if ($Report) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
 $limitBytes = 0                                    # 1.21.0: -LimitRate in bytes per second
@@ -1377,46 +1383,155 @@ if (Test-Path -LiteralPath $fastExe) {
 }
 
 # ---- 1.18.0: ytdl -Doctor ----------------------------------------------------------------------------
-# Everything a run depends on, checked the way a run uses it, with the fix for each problem. Only the
-# sign-in check goes online (one video, metadata only, ~3 s). Exit 0 = no problems, 1 = something failed.
+# Everything a run depends on, checked the way a run uses it, with the fix for each problem. Online: the
+# sign-in check (one video, metadata only, ~3 s) and, at most daily, GitHub's latest tubepacer release
+# (1.26.0). Exit 0 = no problems, 1 = something failed. 1.26.0 -Report: the same results in a text file
+# (and the clipboard) with names, folders and links hidden, ready for a GitHub issue.
 if ($Doctor) {
-    $script:docBad = 0; $script:docWarn = 0
+    $script:docBad = 0; $script:docWarn = 0; $script:docLines = New-Object 'Collections.Generic.List[string]'
     function Out-Check([string]$state, [string]$what, [string]$detail, [string]$fix) {
         $col = @{ OK = 'Green'; WARN = 'Yellow'; FAIL = 'Red'; INFO = 'DarkGray' }[$state]
         if ($state -eq 'FAIL') { $script:docBad++ } elseif ($state -eq 'WARN') { $script:docWarn++ }
         Microsoft.PowerShell.Utility\Write-Host ('  {0,-5}' -f $state) -ForegroundColor $col -NoNewline
         Microsoft.PowerShell.Utility\Write-Host (' {0,-15} {1}' -f $what, $detail)
-        if ($fix -and $state -ne 'OK') { Microsoft.PowerShell.Utility\Write-Host ('                       -> ' + $fix) -ForegroundColor DarkGray }
+        $script:docLines.Add(('  {0,-5} {1,-15} {2}' -f $state, $what, $detail))
+        if ($fix -and $state -ne 'OK') { Microsoft.PowerShell.Utility\Write-Host ('                       -> ' + $fix) -ForegroundColor DarkGray
+                                         $script:docLines.Add('                       -> ' + $fix) }
     }
-    # 1.24.0: Pacey, the mascot, as a two-line text face (two tall eyes, a play-button mouth) when every check passes
-    function Write-PaceyFace([string]$msg) {
-        $eye = [string][char]0x2588; $play = [string][char]0x25B6
-        Microsoft.PowerShell.Utility\Write-Host ("  $eye $eye") -ForegroundColor Magenta
-        Microsoft.PowerShell.Utility\Write-Host ("   $play   ") -ForegroundColor Magenta -NoNewline
-        Microsoft.PowerShell.Utility\Write-Host $msg -ForegroundColor Green
+    function Get-Short([string]$s, [int]$n) { $s = $s.Trim(); if ($s.Length -gt $n) { $s.Substring(0, $n - 3) + '...' } else { $s } }
+    # 1.26.0: install/update/remove commands that match how a tool was installed (Scoop, winget, pip, pipx,
+    # Chocolatey). ytdl itself installed with Scoop means Scoop is there, so missing tools come from it too.
+    $docScoop = "$PSCommandPath" -match '\\scoop\\'
+    function Get-InstallHint([string]$tool, [bool]$scoop) {
+        if ($scoop) { "scoop install $tool" } else { 'winget install ' + @{ 'yt-dlp' = 'yt-dlp.yt-dlp'; ffmpeg = 'Gyan.FFmpeg'; deno = 'DenoLand.Deno' }[$tool] }
     }
-    Microsoft.PowerShell.Utility\Write-Host "ytdl $YtdlVersion doctor  |  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')" -ForegroundColor Cyan
+    function Get-UpdateHint([string]$tool, [string]$path) {
+        if ($path -match '\\scoop\\') { return "scoop update $tool" }
+        if ($path -match '\\chocolatey\\') { return "choco upgrade $tool" }
+        if ($path -match '\\pipx\\') { return "pipx upgrade $tool" }
+        if ($path -match '\\Python[^\\]*\\Scripts\\') { return "python -m pip install -U $tool" }
+        $id = @{ 'yt-dlp' = 'yt-dlp.yt-dlp'; ffmpeg = 'Gyan.FFmpeg'; deno = 'DenoLand.Deno' }[$tool]
+        if ($path -match '\\WinGet\\Packages\\([^\\_]+)_') { $id = $Matches[1] }
+        "winget upgrade $id"
+    }
+    function Get-RemoveHint([string]$tool, [string]$path) {
+        (Get-UpdateHint $tool $path) -replace '^scoop update', 'scoop uninstall' -replace '^winget upgrade', 'winget uninstall' -replace '^choco upgrade', 'choco uninstall' -replace '^pipx upgrade', 'pipx uninstall' -replace '^python -m pip install -U', 'python -m pip uninstall'
+    }
+    # 1.26.0: every copy of a tool on PATH, in PATH order: the first one is the one that runs
+    function Get-ToolCopies([string]$name) {
+        $seen = @{}
+        @(Get-Command $name -All -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { $_.Source } |
+          Where-Object { $_ -and -not $seen.ContainsKey($_) -and ($seen[$_] = 1) })
+    }
+    function Test-ToolCopies([string]$tool) {
+        $c = @(Get-ToolCopies $tool); if ($c.Count -lt 2) { return }
+        $flag = if ($tool -eq 'ffmpeg') { '-version' } else { '--version' }
+        $vs = @(foreach ($x in $c) { $vv = "$(& $x $flag 2>$null | Select-Object -First 1)" -replace '^(?:ffmpeg version|deno) (\S+).*', '$1'; "$x ($(if ($vv.Trim()) { $vv.Trim() } else { "doesn't start" }))" })
+        Out-Check WARN "$tool copies" "$($c.Count) on PATH, the first one runs: $($vs -join '; ')" "remove the one you don't use, e.g. $(Get-RemoveHint $tool $c[1]), so updates reach the copy that runs"
+    }
+    # 1.26.0: the latest tubepacer release on GitHub, asked at most once a day (cached in the state folder)
+    function Get-LatestYtdl {
+        if ($env:YTDL_TEST_LATEST) { if ($env:YTDL_TEST_LATEST -eq 'none') { return $null } return $env:YTDL_TEST_LATEST }   # test hook
+        $cf = Join-Path $stateDir 'latest-release.json'
+        try { $c = Get-Content $cf -Raw -ErrorAction Stop | ConvertFrom-Json; if ($c.Tag -and ((Get-Date) - [datetime]$c.Checked).TotalHours -lt 24) { return [string]$c.Tag } } catch { }
+        try {
+            $r = Invoke-RestMethod 'https://api.github.com/repos/billyreagan/tubepacer/releases/latest' -UseBasicParsing -TimeoutSec 6 -UserAgent 'tubepacer-doctor' -ErrorAction Stop
+            $tag = "$($r.tag_name)" -replace '^v', ''
+            if ($tag -match '^\d+\.\d+\.\d+$') {
+                try { New-Item -ItemType Directory -Force $stateDir | Out-Null; @{ Checked = (Get-Date).ToString('s'); Tag = $tag } | ConvertTo-Json | Set-Content $cf -Encoding ASCII } catch { }
+                return $tag
+            }
+        } catch { }
+        $null
+    }
+    # 1.26.0: is a run holding this folder's lock? (the lock is an exclusively opened file; .info can outlive a crash)
+    function Test-FolderLock([string]$dir) {
+        try { $t = [IO.File]::Open((Join-Path $dir '.ytdl.lock'), 'Open', 'ReadWrite', 'None'); $t.Dispose(); $false }
+        catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { $false } catch { $true }
+    }
+    # 1.26.0: unfinished download files yt-dlp leaves behind (a re-run of the same link resumes them)
+    function Get-PartialFiles([string]$dir) {
+        @(Get-ChildItem -LiteralPath $dir -Recurse -Depth 3 -File -Force -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -like '*.part' -or $_.Name -like '*.part-Frag*' -or $_.Name -like '*.ytdl' -or $_.Name -like '*.temp.*' })
+    }
+    # 1.26.0: how the newest run in this folder ended, read from its log, as one line with the fix
+    function Get-LastRun([string]$logDir, [bool]$running) {
+        $f = @(Get-ChildItem -LiteralPath $logDir -Filter *.log -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending) | Select-Object -First 1
+        if (-not $f) { return $null }
+        $t = @(Get-Content -LiteralPath $f.FullName -Tail 300 -ErrorAction SilentlyContinue | ForEach-Object { ($_ -replace '^\d\d:\d\d:\d\d ', '').Trim() } | Where-Object { $_ })
+        $when = $f.LastWriteTime.ToString('ddd d MMM HH:mm'); $log = "log: $($f.FullName)"
+        $err = @($t | Where-Object { $_ -match '^(\[w\d+\] )?ERROR: |: error: ' })
+        $e1 = if ($err.Count) { Get-Short ($err[-1] -replace '^(\[w\d+\] )?ERROR: ', '') 110 } else { '' }
+        $endL = @($t | Where-Object { $_ -match '^Done\.$|^Finished with errors|Completed videos are kept' })
+        $endL = if ($endL.Count) { $endL[-1] } else { '' }
+        $bot = $t -match 'not a bot|Sign in to confirm|HTTP Error 429|rate-limiting'
+        $o = { param($s, $d, $x) [pscustomobject]@{ State = $s; Text = "$when`: $d"; Fix = $x } }
+        if ($running) { return (& $o 'INFO' 'running now' $log) }
+        if ($endL -eq 'Done.') { return (& $o 'OK' 'finished without errors' '') }
+        if ($endL -match '^Stopped by ytdl -Stop') { return (& $o 'INFO' 'stopped with ytdl -Stop' 're-run the same command to resume') }
+        if ($endL -match '^YouTube limit guard: ') { return (& $o 'WARN' ('stopped by the ' + (Get-Short ($endL -replace '^YouTube ', '' -replace ' Completed videos are kept.*', '') 110)) "re-run the same command after that to resume; $log") }
+        if (-not $endL -and ($t -match 'YouTube limit guard: ')) { return (& $o 'INFO' "didn't start: the YouTube limit guard was on" 'see the limit guard line') }
+        if ($t -match 'no such option|error: .*option') { return (& $o 'WARN' "yt-dlp refused an option: $e1" "check -YtdlpArgs and the command line; $log") }
+        if ($endL) {
+            $d = "finished with errors$(if ($e1) { ": $e1" })"
+            $x = if ($bot) { 'YouTube was rate-limiting or asking for bot checks: sign in with -Browser firefox; re-running retries only the failed videos' } else { 're-running the same command retries only the failed videos' }
+            return (& $o 'WARN' $d "$x; $log")
+        }
+        & $o 'WARN' "ended without finishing (window closed, Ctrl+C or a crash)$(if ($e1) { "; last error: $e1" })" "re-run the same command to resume; $log"
+    }
+    # 1.26.0: -Report hides what identifies the user: links (also proxy logins), account options, the
+    # profile folder, the user and the PC name
+    function ConvertTo-Redacted([string]$s) {
+        $s = $s -replace '(?i)\b[a-z][a-z0-9+.-]*://\S+', '<link>' -replace '(?i)(?<![\w-])(--(?:ap-|video-)?(?:username|password)|--cookies|-u|-p)\s+\S+', '$1 <hidden>'
+        foreach ($pr in @(@($env:USERPROFILE, '~'), @($env:USERNAME, '<user>'), @($env:COMPUTERNAME, '<pc>'))) {
+            if ("$($pr[0])".Length -ge 3) { $s = $s -ireplace [regex]::Escape($pr[0]), $pr[1] }
+        }
+        $s
+    }
+    # 1.25.1: Pulse, the tubepacer mark, as one line when every check passes: a blue heartbeat,
+    # the magenta dip, the green recovery, then the play button (replaces 1.24.0's Pacey face)
+    function Write-PulseMark([string]$msg) {
+        $w = 'Microsoft.PowerShell.Utility\Write-Host'
+        & $w '  --/\/-' -ForegroundColor Cyan -NoNewline
+        & $w '\' -ForegroundColor Magenta -NoNewline
+        & $w '/-' -ForegroundColor Green -NoNewline
+        & $w (' ' + [string][char]0x25B6 + '  ') -ForegroundColor White -NoNewline
+        & $w $msg -ForegroundColor Green
+    }
+    $docHead = "ytdl $YtdlVersion doctor  |  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))  |  $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    Microsoft.PowerShell.Utility\Write-Host $docHead -ForegroundColor Cyan
+    # 1.26.0: ytdl itself against the latest release
+    $docLatest = Get-LatestYtdl
+    if (-not $docLatest) { Out-Check INFO 'ytdl' "$YtdlVersion (couldn't reach GitHub to check for a newer release)" '' }
+    elseif ([version]$docLatest -gt [version]$YtdlVersion) { Out-Check WARN 'ytdl' "$YtdlVersion installed; $docLatest is out" $(if ($docScoop) { 'scoop update tubepacer' } else { 'download it: https://github.com/billyreagan/tubepacer/releases/latest' }) }
+    elseif ([version]$docLatest -lt [version]$YtdlVersion) { Out-Check OK 'ytdl' "$YtdlVersion (newer than the latest release, $docLatest)" '' }
+    else { Out-Check OK 'ytdl' "$YtdlVersion, the latest release" '' }
     # yt-dlp
+    $ytSrc = @(Get-ToolCopies 'yt-dlp') | Select-Object -First 1
     $v = if ($ytdlp) { "$(& $ytdlp --version 2>$null | Select-Object -First 1)".Trim() } else { '' }
-    if (-not $v) { Out-Check FAIL 'yt-dlp' 'not found or not starting' 'winget install yt-dlp.yt-dlp' }
+    if (-not $v) { Out-Check FAIL 'yt-dlp' 'not found or not starting' (Get-InstallHint 'yt-dlp' $docScoop) }
     else {
         $age = $null; if ($v -match '^(\d{4})\.(\d{2})\.(\d{2})') { $age = [int]((Get-Date) - (Get-Date -Year ([int]$Matches[1]) -Month ([int]$Matches[2]) -Day ([int]$Matches[3]))).TotalDays }
         $build = if ($ytdlp -eq $fastExe) { 'fast-starting build' } else { 'one-file build (starts ~0.7 s slower)' }
         $st = if ($null -ne $age -and $age -ge 60) { 'FAIL' } elseif ($null -ne $age -and $age -ge 30) { 'WARN' } else { 'OK' }
-        Out-Check $st 'yt-dlp' "$v, $age days old, $build" 'winget upgrade yt-dlp.yt-dlp   (or run downloads with -AutoUpdate)'
+        $uh = Get-UpdateHint 'yt-dlp' $ytSrc
+        Out-Check $st 'yt-dlp' "$v, $age days old, $build" "$uh$(if ($uh -like 'winget *') { '   (or run downloads with -AutoUpdate)' })"
     }
+    Test-ToolCopies 'yt-dlp'
     # ffmpeg / ffprobe
     $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-    if (-not $ff) { Out-Check FAIL 'ffmpeg' 'not found (needed to merge video and audio, and for cover art)' 'winget install Gyan.FFmpeg' }
+    if (-not $ff) { Out-Check FAIL 'ffmpeg' 'not found (needed to merge video and audio, and for cover art)' (Get-InstallHint 'ffmpeg' $docScoop) }
     else {
         $fv = "$(& $ff.Source -version 2>$null | Select-Object -First 1)" -replace '^ffmpeg version (\S+).*', '$1'
         $fp = Test-Path (Join-Path (Split-Path $ff.Source) 'ffprobe.exe')
-        Out-Check $(if ($fp) { 'OK' } else { 'WARN' }) 'ffmpeg' "$fv$(if (-not $fp) { ', but ffprobe.exe is missing next to it' })" 'reinstall: winget install Gyan.FFmpeg'
+        Out-Check $(if ($fp) { 'OK' } else { 'WARN' }) 'ffmpeg' "$fv$(if (-not $fp) { ', but ffprobe.exe is missing next to it' })" "reinstall it: $(Get-RemoveHint 'ffmpeg' $ff.Source), then $((Get-UpdateHint 'ffmpeg' $ff.Source) -replace '^winget upgrade', 'winget install' -replace '^scoop update', 'scoop install' -replace '^choco upgrade', 'choco install')"
     }
+    Test-ToolCopies 'ffmpeg'
     # deno (YouTube's JavaScript challenges)
     $dn = Get-Command deno -ErrorAction SilentlyContinue
-    if (-not $dn) { Out-Check WARN 'deno' 'not found: yt-dlp may get only some formats (often 360p) or none' 'winget install DenoLand.Deno' }
+    if (-not $dn) { Out-Check WARN 'deno' 'not found: yt-dlp may get only some formats (often 360p) or none' (Get-InstallHint 'deno' $docScoop) }
     else { Out-Check OK 'deno' ("$(& $dn.Source --version 2>$null | Select-Object -First 1)" -replace '^deno ', '') }
+    Test-ToolCopies 'deno'
     # 1.22.0: PO-token provider (only used with -PoToken)
     $pd = Join-Path $env:LOCALAPPDATA 'ytdl\pot'
     $pz = Test-Path (Join-Path $pd 'plugins\bgutil-ytdlp-pot-provider.zip'); $pn = @(Get-ChildItem $pd -Directory -Filter 'server-*' -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'server\node_modules') })
@@ -1468,7 +1583,18 @@ if ($Doctor) {
                   else { Out-Check OK 'pacing' 'no recent bot check in this folder' } } catch { Out-Check WARN 'pacing' "can't read $pf" '' }
         } else { Out-Check OK 'pacing' 'no bot check ever recorded in this folder' }
         $li = Join-Path $Out '.ytdl.lock.info'
-        if (Test-Path $li) { Out-Check INFO 'running' "a run is using this folder: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' ')" '' }
+        $docHeld = Test-FolderLock $Out   # 1.26.0: the lock itself, not its note (a crash leaves the note behind)
+        if ($docHeld) { Out-Check INFO 'running' "a run is using this folder: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' ')" '' }
+        elseif (Test-Path $li) { Out-Check INFO 'running' "nothing is running here (a run that was closed or crashed left a note: $((Get-Content $li -ErrorAction SilentlyContinue) -join ' '))" 'nothing to do: the next run replaces it' }
+        # 1.26.0: how the last run here ended, and unfinished download files
+        $docLast = Get-LastRun (Join-Path $Out '.ytdl-logs') $docHeld
+        if ($docLast) { Out-Check $docLast.State 'last run' $docLast.Text $docLast.Fix }
+        $docParts = @(Get-PartialFiles $Out)
+        if ($docParts.Count) {
+            $pgb = ($docParts | Measure-Object Length -Sum).Sum / 1GB
+            if ($docHeld) { Out-Check INFO 'unfinished' ('{0} download file(s), {1:N2} GB: the run in progress is using them' -f $docParts.Count, $pgb) '' }
+            else { Out-Check $(if ($pgb -ge 1) { 'WARN' } else { 'INFO' }) 'unfinished' ('{0} leftover download file(s), {1:N2} GB, oldest from {2:d MMM}: re-running the same link resumes them' -f $docParts.Count, $pgb, ($docParts | Sort-Object LastWriteTime | Select-Object -First 1).LastWriteTime) "or delete them: Get-ChildItem '$Out' -Recurse -File -Include *.part,*.part-Frag*,*.ytdl,*.temp.* | Remove-Item" }
+        }
         $ar = Join-Path $Out '.ytdl-archive.txt'
         Out-Check INFO 'folder' "$Out$(if (Test-Path $ar) { ": $(@(Get-Content $ar).Count) video(s) downloaded so far" } else { ' (nothing downloaded here yet)' })" ''
     } else { Out-Check INFO 'folder' "$Out (doesn't exist yet; created on the first download)" '' }
@@ -1487,9 +1613,24 @@ if ($Doctor) {
         }
     } else { Out-Check INFO 'subscriptions' 'none (ytdl <channel url> -Subscribe adds one)' '' }
     Microsoft.PowerShell.Utility\Write-Host ''
-    if ($script:docBad) { Microsoft.PowerShell.Utility\Write-Host "$($script:docBad) problem(s) found; the fix is under each one." -ForegroundColor Red }
-    elseif ($script:docWarn) { Microsoft.PowerShell.Utility\Write-Host "Works, with $($script:docWarn) thing(s) worth a look." -ForegroundColor Yellow }
-    else { Write-PaceyFace 'Everything ytdl needs is in order.' }
+    $docSum = if ($script:docBad) { "$($script:docBad) problem(s) found; the fix is under each one." } elseif ($script:docWarn) { "Works, with $($script:docWarn) thing(s) worth a look." } else { 'Everything ytdl needs is in order.' }
+    if ($script:docBad) { Microsoft.PowerShell.Utility\Write-Host $docSum -ForegroundColor Red }
+    elseif ($script:docWarn) { Microsoft.PowerShell.Utility\Write-Host $docSum -ForegroundColor Yellow }
+    else { Write-PulseMark $docSum }
+    # 1.26.0 -Report: the results as a text file (and on the clipboard) for a GitHub issue, identifying parts hidden
+    if ($Report) {
+        $osName = try { $c = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop; "$($c.Caption) $($c.Version)" } catch { [Environment]::OSVersion.VersionString }
+        $body = @("tubepacer doctor report (user, PC, folder names and links are hidden)", $docHead,
+                  "Windows: $osName  |  installed: $(if ($docScoop) { 'Scoop' } else { 'by hand (zip or git)' })  |  console: $([Console]::OutputEncoding.WebName)", '') +
+                @($script:docLines) + @('', $docSum) | ForEach-Object { ConvertTo-Redacted $_ }
+        $rd = [Environment]::GetFolderPath('Desktop'); if (-not $rd -or -not (Test-Path -LiteralPath $rd)) { $rd = [IO.Path]::GetTempPath() }
+        $rp = Join-Path $rd ('ytdl-doctor-{0:yyyyMMdd-HHmm}.txt' -f (Get-Date))
+        try {
+            $body | Set-Content -LiteralPath $rp -Encoding UTF8 -ErrorAction Stop
+            $clip = try { ($body -join "`r`n") | Set-Clipboard -ErrorAction Stop; ' and copied to the clipboard' } catch { '' }
+            Microsoft.PowerShell.Utility\Write-Host "Report saved to $rp$clip. Read it, then paste it into an issue: https://github.com/billyreagan/tubepacer/issues/new" -ForegroundColor Cyan
+        } catch { Microsoft.PowerShell.Utility\Write-Host "Couldn't save the report to $rp ($($_.Exception.Message))" -ForegroundColor Yellow }
+    }
     Restore-Console
     exit $(if ($script:docBad) { 1 } else { 0 })
 }

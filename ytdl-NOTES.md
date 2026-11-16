@@ -1,10 +1,10 @@
-# ytdl 1.25.0 — Changelog & Logic Notes
+# ytdl 1.26.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.25.0 (2026-11-15) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.26.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -25,6 +25,7 @@ Since 2026-11-13 the project lives in its own folder, `C:\Users\Zuren\.local\bin
 | `ytdl-project\bench\` | `bench1080.ps1` (ytdl vs yt-dlp, 1080p batches; run `pwsh -File ...\bench\bench1080.ps1 -Sizes 1,6`) and `results\` (all runs' `results-run*.jsonl` and logs; moved from `%TEMP%\ytdl-bench`) |
 | `ytdl-project\tests\` | Test scripts used to verify releases (offline checks, single-video timing, failed list / browser link) |
 | `ytdl-project\backups\` | Every `ytdl.ps1.bak-<version>` below, `ytdl.cmd.bak-1.2.0`, and `ytdl.ps1.broken-1.15.0-wip` (the half-written 1.15.0 an API error left behind) |
+| `ytdl.ps1.bak-1.25.0` | 1.25.0, kept for rollback (before 1.25.1's Pulse mark and 1.26.0's -Doctor additions; both shipped together) |
 | `ytdl.ps1.bak-1.24.2` | 1.24.2, kept for rollback (before 1.25.0's YouTube limit guard) |
 | `ytdl.ps1.bak-1.24.1` | 1.24.1, kept for rollback (before 1.24.2's bitrate weighting) |
 | `ytdl.ps1.bak-1.24.0` | 1.24.0, kept for rollback (before 1.24.1's estimate tuning) |
@@ -167,7 +168,8 @@ The `.bak` files above are in `ytdl-project\backups\`.
 | `-History [N]` | 20 | List the last N downloads (date, height, size on disk or "deleted", title, folder); `-Match` filters titles. Recorded in `%LOCALAPPDATA%\ytdl\history.tsv` from 1.23.0 on |
 | `-Feed` / `-FeedBase <url>` | off | Subscription option: after each `-Sync`, write a podcast feed (`feed.xml`, RSS 2.0) of the files still in the folder. `-FeedBase` = the web address the folder is served at (implies `-Feed`); without it the links are `file:///`. 1.23.0 |
 | `-IgnoreCooldown` | off | Start even while the YouTube limit guard is on (1.25.0). The guard still records new limits. |
-| `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0) |
+| `-Doctor` | — | Check yt-dlp, ffmpeg, deno, sign-in (with `-Browser`/`-Cookies`), disk, pacing, subscriptions and the schedule; exit 1 if something failed (1.18.0). Also ytdl's own version, copies of a tool on PATH, the last run, unfinished files (1.26.0) |
+| `-Report` | — | With `-Doctor` (or alone): save the results to a text file on the Desktop with links, logins, user, PC and profile names hidden, and copy it for a GitHub issue (1.26.0) |
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
 
@@ -177,6 +179,24 @@ The `.bak` files above are in `ytdl-project\backups\`.
 
 ## Changelog
 
+### 1.26.0 — `-Doctor` explains more, `-Report` (2026-11-16)
+| Change | Detail |
+|---|---|
+| **Update hints by install** | Each tool's update and install hint now matches how it was installed: Scoop, winget (the package id is read from its folder, so ffmpeg from `yt-dlp.FFmpeg` gets that id, not `Gyan.FFmpeg`), pip, pipx or Chocolatey. The `-AutoUpdate` note shows only for winget installs |
+| **Copies on PATH** | WARN when PATH holds two or more copies of yt-dlp, ffmpeg or deno: lists each copy and its version, says which one runs, and how to remove the others |
+| **ytdl version** | Compares ytdl with the latest GitHub release (asked once a day, cached in the state folder; silent INFO when offline). The hint is `scoop update tubepacer` for Scoop installs, else the release page |
+| **Leftover lock note** | `running` now checks the lock itself. A note left by a crashed run gives INFO "nothing is running here" instead of a stale pid |
+| **Last run** | One line on how the newest run in the folder ended: finished, stopped by `-Stop`, stopped by the limit guard, didn't start, yt-dlp refused an option, finished with errors (the first error, plus a sign-in hint on bot checks) or ended without finishing |
+| **Unfinished files** | Counts `.part`, `.part-Frag*`, `.ytdl` and `.temp.*` files up to 3 folders deep; WARN at 1 GB or more, with the command that deletes them |
+| **`-Report`** | Saves the doctor's lines plus Windows version, install method and console encoding to `Desktop\ytdl-doctor-<time>.txt`, copies it to the clipboard and prints the new-issue link. Links, account options, user, PC and profile names are hidden |
+
+**Verified:** tests\v1.26.0.ps1 43/43 (offline: hints for 8 install paths, copies on PATH, lock held/released, unfinished files, 10 last-run log shapes, redaction; full `-Doctor` runs in PowerShell 7 with the release check stubbed newer/offline, and `-Report` alone in 5.1: file saved, no user or PC name). Real `-Doctor` run here: stale note and the refused-option last run shown. Check-Ytdl: ascii, parse 7/5.1, names.
+### 1.25.1 — Pulse in `-Doctor` (2026-11-16)
+| Change | Detail |
+|---|---|
+| **Pulse mark** | The all-clear line of `-Doctor` now shows Pulse, the tubepacer mark, instead of 1.24.0's Pacey face: one line, `--/\/-` in cyan (the heartbeat), `\` in magenta (the dip), `/-` in green (the recovery), a white play button (`U+25B6`), then the green "Everything ytdl needs is in order." `Write-PaceyFace` is now `Write-PulseMark`. Built from `[char]` codes, so the script stays ASCII. Problem and warning summaries and exit codes are unchanged |
+
+**Verified:** `Write-PulseMark` loaded by AST and run in PowerShell 7 and 5.1 (both print the mark on one line); `-Version` prints 1.25.1. Check-Ytdl: ascii, parse 7/5.1, names, case variants.
 ### 1.25.0 — YouTube limit guard (2026-11-15)
 YouTube's limits are per IP and per account, escalate when ignored (bot check, then 429, then hours-long blocks) and decay only with quiet time. Pacing used to react only inside one run, and only by slowing down. Research and sources: `docs\pacing-research-2026-11-15.md`.
 
