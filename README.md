@@ -154,7 +154,7 @@ Measured on one Windows PC and home connection; every run, script and raw result
 | **Diagnoses and fixes its own setup** ([how](#the-doctor)). | `-Doctor`: the whole setup in ~3 s; `-Doctor <url>` explains one video in one request; `-Fix` repairs, asking first; `-Report` for issues (263 release-test checks, 1.26–1.29) | yt-dlp `-v` prints versions and a debug log, with no checks or fixes |
 | **Native Windows.** No Docker, Python or server. | One zip + `winget` | Self-hosted archivers (Pinchflat, TubeArchivist, MeTube, Youtarr) need Docker |
 
-Also measured: 1.64× faster than yt-dlp on a 12-video 1080p batch (E1); 1,026 archive videos in five runs, signed in, 0 failed; yt-dlp start-up 1.0 s → 0.33 s; 1,036 missed thumbnail lookups per season → 0.
+Also measured: 1.64× faster than yt-dlp on a 12-video 1080p batch (E1); 1.35× faster at 144p to 1080p, 6 resolutions pooled, with both tools delivering all 14 requested format classes up to 8K HDR (E11); 1,026 archive videos in five runs, signed in, 0 failed; yt-dlp start-up 1.0 s → 0.33 s; 1,036 missed thumbnail lookups per season → 0.
 
 > [!NOTE]
 > **Where others lead.** Signed out, tubepacer drew 1.52× as many bot checks as yt-dlp (E9), though it delivered 44 of 80 videos to yt-dlp's 0. On the 6-video job, yt-pdlp tied it (0.99×, E8).
@@ -450,14 +450,14 @@ A run seems stuck|tubepacer kills a pass after `-StallMinutes` of silence and re
 
 ## Benchmarks
 
-Every run uses the same PC and connection, and compared tools run in paired rounds on the same videos. The verdict rule was fixed before the later suites ran, and a tie is reported as a tie and a loss as a loss. Of 13 comparisons, tubepacer leads 9, ties 3 and is behind in 1 (signed out, E9).
+Every run uses the same PC and connection, and compared tools run in paired rounds on the same videos. The verdict rule was fixed before the later suites ran, and a tie is reported as a tie and a loss as a loss. Of 16 comparisons, tubepacer leads 11, ties 4 and is behind in 1 (signed out, E9). E11's 144p–1080p figure pools 6 resolution classes, a choice made after the runs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/speedup-dark.svg">
   <img alt="Speedup over yt-dlp at 1080p, signed in: 1 video 1.25×, 3 videos 1.37×, 6 videos 1.85×, 12 videos 1.64×; tubepacer won every round (E1)" src=".github/speedup-light.svg" width="960">
 </picture>
 
-The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
+The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.4, 16 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
 
 ## Built on yt-dlp
 
