@@ -144,7 +144,7 @@ Measured on one Windows PC and home connection; every run, script and raw result
 
 | | tubepacer | Others |
 |---|---|---|
-| **Stays under YouTube's limits.** Shared hourly budget; steps back on a bot check, eases back after clean videos; a circuit breaker stops before a block becomes a ban ([how](#how-pacing-works)). | 0 bot checks in 208 videos, signed in (E5–E6); 3.3× faster than yt-dlp's fixed sleeps on the same 6 videos (E5) | Fixed or random sleeps (yt-dlp `-t sleep`, ytdl-sub); adaptive pacing not documented |
+| **Stays under YouTube's limits.** Shared hourly budget; steps back on a bot check, eases back after clean videos; a circuit breaker stops before a block becomes a ban ([how](#how-pacing-works)). | 0 bot checks in 208 videos, signed in (E5–E6); 3.4× faster than yt-dlp's fixed sleeps on the same 6 videos (E5) | Fixed or random sleeps (yt-dlp `-t sleep`, ytdl-sub); adaptive pacing not documented |
 | **Size and finish time before the first byte.** | 50 videos: count, size and ETA in 3.9 s (R6E, replicating E6E) | yt-dlp needs 144 s for sizes alone; whole-run ETA not documented |
 | **A finish time that stays honest.** | Median 20.5 s off across 167 printed estimates (E7) | Per-file ETA only |
 | **Recovers when sign-in cookies rotate.** | Downloading again in a median 1.6 s; all 3 rotations recovered (E10) | Cookies read once at start |
@@ -458,7 +458,17 @@ Every run uses the same PC and connection, and compared tools run in paired roun
   <img alt="Speedup over yt-dlp at 1080p, signed in: 1 video 1.25×, 3 videos 1.37×, 6 videos 1.85×, 12 videos 1.64×; tubepacer won every round (E1)" src=".github/speedup-light.svg" width="960">
 </picture>
 
-The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.6, 16 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/compare-dark.svg">
+  <img alt="All 19 comparisons as ratios of the other tool's time to tubepacer's, log scale, with 95% intervals: 13 leads from 1.26× (formats 1080p and higher, E11) to 37.37× (size of 50 videos, R6E), ties with yt-pdlp (0.99×, E8) and signed out (0.94×, R4), and 4 count-only ties; tubepacer was behind in none" src=".github/compare-light.svg" width="960">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/firstanswer-dark.svg">
+  <img alt="Seconds until each tool printed a playlist's size, log scale. 50 videos: ytdl -Estimate 3.9 s (with the finish time), yt-dlp -s 143.8 s; ytdl -Estimate -Precise, which asks for every exact size, 409.3 s; yt-dlp --flat-playlist 3.4 s for count and runtime only. 12 videos: 3.2 s, 37.2 s, 103.3 s and 2.0 s" src=".github/firstanswer-light.svg" width="960">
+</picture>
+
+The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.7, 17 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
 
 ## Built on yt-dlp
 

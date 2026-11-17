@@ -32,7 +32,7 @@
 </g>
 <g font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" fill="#f8fafc">
   <rect x="60" y="244" width="14" height="3" fill="#94a3b8"/><text x="80" y="249">fixed 5 s sleep</text>
-  <rect x="190" y="244" width="14" height="3" fill="#FF2EA0"/><text x="210" y="249">tubepacer 1.32: steps back, eases off, stops only on repeated bot checks</text>
+  <rect x="190" y="244" width="14" height="3" fill="#FF2EA0"/><text x="210" y="249">tubepacer 1.33: steps back, eases off, stops only when a limit repeats or lasts</text>
 </g>
-<text x="60" y="274" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#94a3b8">Schematic, not a measurement. Levels and rules as shipped in 1.32.0, signed in.</text>
+<text x="60" y="274" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="10.5" font-style="italic" fill="#94a3b8">Schematic, not a measurement. Levels and rules as in 1.33.0, signed in. Not drawn: the shared account-limit wait (1.33).</text>
 </svg>
