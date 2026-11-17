@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.32.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.33.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -290,7 +290,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.32.1'
+$YtdlVersion = '1.33.0'
 if ($Report -or $Fix) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report; 1.29.0: -Fix too
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -841,6 +841,15 @@ $breakerBaseSec = 3600
 $limitPattern   = 'confirm you.?re not a bot|not a bot|HTTP Error 429|Too Many Requests|rate.?limit|isn.t available, try again later'
 $limit429Pattern = '429|Too Many Requests|rate.?limit|try again later'
 $limitBotPattern = 'confirm you.?re not a bot|not a bot|detected as a bot'   # 1.30.0: the only breaker signal
+# 1.33.0: YouTube's account limit ("Your account has been rate-limited by YouTube for up to an hour") is its own
+# signal: one shared wait for every run and worker on the PC, one probe video at a time, one clear notice, and the
+# breaker (exit 75) once it has lasted an hour. It also matches the 429 patterns, so the pacing steps (+2 levels)
+# stay as in 1.32.0, which got 6 of 6 through it by persisting (suite14 r1, 2026-11-16).
+$limitAcctPattern = 'rate-limited by YouTube|account has been rate-limited'
+$acctWaitSec = 300; $acctCapSec = 3600
+$acctEnv = 0; if ([int]::TryParse("$env:YTDL_TEST_ACCTWAIT", [ref]$acctEnv) -and $acctEnv -gt 0) { $acctWaitSec = $acctEnv }   # test hooks
+$acctEnv = 0; if ([int]::TryParse("$env:YTDL_TEST_ACCTCAP", [ref]$acctEnv) -and $acctEnv -gt 0) { $acctCapSec = $acctEnv }
+function Get-LimitKind([string]$line) { if ($line -match $limitAcctPattern) { 'acct' } elseif ($line -match $limit429Pattern) { '429' } else { 'bot' } }
 # 1.30.0: requests counted from yt-dlp's own lines (about 4-5 per video); "Downloading 50 items of 50" is not one
 $reqLinePattern = '^\[youtube(?::tab)?\] [^:]+: Downloading (?!\d+ items)|^\[info\] Writing video (?:automatic )?subtitles'
 $reqPending = 0; $probeCounted = 0
@@ -851,14 +860,14 @@ $limitSkipPattern = '^\[(download\] Destination|Merger|ExtractAudio|Metadata|Emb
 $limitLinePattern = '(^|] )(ERROR|WARNING):'
 function Get-Epoch { [double][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 function Read-GlobalPace {
-    $g = @{ Scheme = 3; CooldownUntil = 0.0; Kind = ''; ProbeNeeded = $false; Level = 0; LevelAt = 0.0; LastHit = 0.0; Events = @(); Opens = @(); LogIn = @(); LogOut = @(); ReqIn = @(); ReqOut = @() }
+    $g = @{ Scheme = 3; CooldownUntil = 0.0; Kind = ''; ProbeNeeded = $false; Level = 0; LevelAt = 0.0; LastHit = 0.0; Events = @(); Opens = @(); LogIn = @(); LogOut = @(); ReqIn = @(); ReqOut = @(); AcctSince = 0.0; AcctUntil = 0.0; AcctProbe = 0.0 }
     try {
         $j = [IO.File]::ReadAllText($globalPaceFile) | ConvertFrom-Json
         foreach ($p in $j.PSObject.Properties) { $g[$p.Name] = $p.Value }
     } catch { }
     foreach ($k in 'Events', 'Opens', 'LogIn', 'LogOut') { $g[$k] = @(@($g[$k]) | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ }) }
     foreach ($k in 'ReqIn', 'ReqOut') { $g[$k] = @(@($g[$k]) | Where-Object { "$_" -match '^\d+:\d+$' } | ForEach-Object { "$_" }) }
-    foreach ($k in 'CooldownUntil', 'LevelAt', 'LastHit') { $g[$k] = [double]$g[$k] }
+    foreach ($k in 'CooldownUntil', 'LevelAt', 'LastHit', 'AcctSince', 'AcctUntil', 'AcctProbe') { $g[$k] = [double]$g[$k] }
     $g.Level = [int]$g.Level; $g.ProbeNeeded = [bool]$g.ProbeNeeded
     $g
 }
@@ -887,7 +896,7 @@ function Update-GlobalPace([scriptblock]$change) {
 function Get-BreakerLeft($g) { [math]::Max(0.0, [double]$g.CooldownUntil - (Get-Epoch)) }
 function Get-BreakerText($g) {
     $until = [DateTimeOffset]::FromUnixTimeSeconds([int64]$g.CooldownUntil).LocalDateTime
-    $why = switch ($g.Kind) { '429' { 'a rate limit (HTTP 429)' } 'max' { 'bot checks at the slowest pacing' } 'budget' { 'the hourly budget' } default { 'repeated bot checks' } }
+    $why = switch ($g.Kind) { '429' { 'a rate limit (HTTP 429)' } 'acct' { "YouTube's limit on this account, still there after $([math]::Round($acctCapSec / 60)) min" } 'max' { 'bot checks at the slowest pacing' } 'budget' { 'the hourly budget' } default { 'repeated bot checks' } }
     $day = if ($until.Date -ne (Get-Date).Date) { $until.ToString('ddd ') } else { '' }
     "YouTube limit guard: no downloads until $day$($until.ToString('HH:mm')) ($([math]::Ceiling((Get-BreakerLeft $g) / 60)) min left) after $why on this PC (-IgnoreCooldown starts anyway). Closing this window is fine: a run started before then stops with this message, and the first one after it checks one video before the rest."
 }
@@ -899,6 +908,46 @@ function Open-Breaker([string]$kind) {
         if ($g.CooldownUntil -gt $now) { return }
         $g.CooldownUntil = $now + $breakerBaseSec
         $g.Opens = @($g.Opens) + $now; $g.Kind = $kind; $g.ProbeNeeded = $true
+    }
+}
+# 1.33.0: the account-limit episode, shared through the global pace file. AcctSince = when it began (0 = none),
+# AcctUntil = when the shared wait ends, AcctProbe = when a process took the probe turn (one at a time).
+# Enter-AcctLimit starts or joins the episode: First = this call began it; Over = it has lasted $acctCapSec.
+function Enter-AcctLimit {
+    $r = @{ First = $false; Since = 0.0; Until = 0.0; Over = $false }
+    $g = Update-GlobalPace {
+        param($g, $now)
+        if ($g.AcctSince -le 0) { $g.AcctSince = $now; $r.First = $true }
+        if ($g.AcctUntil -le $now) { $g.AcctUntil = $now + $acctWaitSec }   # a failed probe: wait again
+        $g.AcctProbe = 0.0
+    }
+    $r.Since = [double]$g.AcctSince; $r.Until = [double]$g.AcctUntil
+    $r.Over = ((Get-Epoch) - $r.Since) -ge $acctCapSec
+    $r
+}
+# A video started downloading, so the limit has lifted (for every worker: the waiting ones see AcctSince = 0).
+function Clear-AcctLimit {
+    $null = Update-GlobalPace { param($g, $now) $g.AcctSince = 0.0; $g.AcctUntil = 0.0; $g.AcctProbe = 0.0 }
+}
+# One step of the turn after the wait: 'wait' (shared wait still running, or another process is probing),
+# 'go' (this process probes, or the limit is already cleared), 'breaker' (the guard opened meanwhile).
+# A probe turn older than 120 s is taken over (its worker may have finished or died).
+function Get-AcctTurn {
+    $r = @{ Turn = 'wait' }
+    $null = Update-GlobalPace {
+        param($g, $now)
+        if ($g.CooldownUntil -gt $now) { $r.Turn = 'breaker' }
+        elseif ($g.AcctSince -le 0) { $r.Turn = 'go' }
+        elseif ($g.AcctUntil -le $now -and $g.AcctProbe -lt $now - 120) { $g.AcctProbe = $now; $r.Turn = 'go' }
+    }
+    $r.Turn
+}
+# Wait for the turn in 5 s steps; returns 'go', 'breaker' or 'stop' (ytdl -Stop / Ctrl+C path).
+function Wait-AcctTurn {
+    while ($true) {
+        $t = Get-AcctTurn
+        if ($t -ne 'wait') { return $t }
+        if (-not (Wait-OrStop 5)) { return 'stop' }
     }
 }
 # 1.30.0: the hourly request budget. Requests are buffered and written with the next budget step.
@@ -2397,6 +2446,13 @@ $paceFile   = Join-Path $Out '.ytdl-pace.json'
 # recovery (stop, slow down one level, tell the other workers, resume the partial file) can be timed.
 $testBot = 0; [void][int]::TryParse("$env:YTDL_TEST_BOTCHECK", [ref]$testBot)
 $testBotFlag = Join-Path $Out '.ytdl-testbot'; $testBotN = 0; $testBotFired = $false
+# 1.33.0: YTDL_TEST_ACCTLIMIT=N turns the Nth download progress line into YouTube's account-limit message, once per
+# folder (YTDL_TEST_ACCTSTUCK=1: every progress line from then on, to reach the cap; YTDL_TEST_ACCTWAIT and
+# YTDL_TEST_ACCTCAP shorten the 5-min wait and the 60-min cap, in seconds). It drives the real shared state and
+# can open the breaker, so it runs only with YTDL_STATE set to a test folder.
+$testAcct = 0; [void][int]::TryParse("$env:YTDL_TEST_ACCTLIMIT", [ref]$testAcct)
+if ($testAcct -gt 0 -and -not $env:YTDL_STATE) { Write-Host '[ytdl] YTDL_TEST_ACCTLIMIT ignored: set YTDL_STATE to a test folder first.' -ForegroundColor Yellow; $testAcct = 0 }
+$testAcctStuck = ("$env:YTDL_TEST_ACCTSTUCK" -eq '1'); $testAcctFlag = Join-Path $Out '.ytdl-testacct'; $testAcctN = 0
 $paceLevel  = 2
 # 1.25.0 (AIMD): the floor is where a run starts and the lowest it speeds back down to. Signed in starts
 # at L1 (0.5 s per request), not L0; a batch of 20 or fewer videos still gets L0 (set after the scan).
@@ -4146,6 +4202,16 @@ function Invoke-Pass([string[]]$passArgs) {
                     $line = "ERROR: [youtube] $($eta.Cur): Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication. [simulated by YTDL_TEST_BOTCHECK]"
                 }
             }
+            if ($testAcct -gt 0 -and $line -match '^\[download\]\s+[\d.]+% of' -and ($testAcctStuck -or -not (Test-Path $testAcctFlag)) -and ++$script:testAcctN -ge $testAcct) {   # 1.33.0 test hook
+                New-Item -ItemType File -Force $testAcctFlag | Out-Null
+                $line = "ERROR: [youtube] $($eta.Cur): Video unavailable. This content isn't available, try again later. Your account has been rate-limited by YouTube for up to an hour. [simulated by YTDL_TEST_ACCTLIMIT]"
+            }
+            # 1.33.0: a video is downloading again, so the account limit has lifted
+            if ($script:acctActive -and $line -match '^\[download\]\s+[\d.]+% of') {
+                $script:acctActive = $false; Clear-AcctLimit
+                Write-Host "[ytdl] YouTube's account limit has lifted; continuing." -ForegroundColor Green
+                Write-LogOnly '[ytdl-event] limit: acct cleared'
+            }
             if ($script:bgScan) { Merge-BgScan }
             # 1.30.0: count YouTube requests; act on a level change only between videos
             if ($line -match $reqLinePattern) { $script:reqPending++ }
@@ -4210,6 +4276,7 @@ function Invoke-Pass([string[]]$passArgs) {
                     }
                 } else {
                     $script:paceWas429 = ($line -match $limit429Pattern)
+                    $script:paceAcct = ($line -match $limitAcctPattern)   # 1.33.0 (also counts as a 429)
                     $script:paceSim = ($line -match 'simulated by YTDL_TEST_BOTCHECK')
                     $runState.Abort = 'pace'; $runState.Running = $false
                     & $killTree $PID
@@ -4221,7 +4288,7 @@ function Invoke-Pass([string[]]$passArgs) {
                 if (-not $runState.Abort) { Step-Budget }
             }
             # 1.25.0: "Video unavailable" again and again while signed in can mean the account is flagged
-            if (($Browser -or $Cookies) -and $line -match '^ERROR.*Video unavailable' -and ++$script:unavailN -eq 3) {
+            if (($Browser -or $Cookies) -and $line -match '^ERROR.*Video unavailable' -and $line -notmatch $limitAcctPattern -and ++$script:unavailN -eq 3) {   # 1.33.0: the account limit has its own notice
                 Write-Host "[ytdl] 3 videos were 'unavailable' while signed in. If they play in a browser, YouTube may be limiting this account: try the same command without -Browser/-Cookies." -ForegroundColor Yellow
             }
 
@@ -4341,7 +4408,10 @@ $restartNow  = $false   # next loop iteration is a restart (cookies/fragments), 
 $restartWhy  = ''
 $restartWait = 5
 $paceWas429  = $false
-$failInfo    = @{}      # 1.16.0: video id -> last error message
+$paceAcct    = $false   # 1.33.0: the last limit was YouTube's account limit
+$acctActive  = $false   # 1.33.0: this process is in an account-limit episode (a progress line clears it)
+$acctTurn    = $false   # 1.33.0: the next restart waits for the shared account-limit turn
+$failInfo   = @{}      # 1.16.0: video id -> last error message
 $curVid      = $null
 function Set-PaceLevel([int]$lvl) {
     $script:paceLevel = $lvl; $runState.Level = $lvl
@@ -4354,7 +4424,20 @@ function Set-PaceLevel([int]$lvl) {
 
 try {
     for ($pass = 1; $pass -le $totalPasses; $pass++) {
-        if ($restartNow) {
+        if ($restartNow -and $acctTurn) {
+            # 1.33.0: the shared account-limit wait, then one process at a time tries one video
+            $restartNow = $false; $acctTurn = $false
+            $au = [DateTimeOffset]::FromUnixTimeSeconds([int64](Read-GlobalPace).AcctUntil).LocalDateTime
+            Write-Host "`n=== Waiting for YouTube's account limit (next try about $($au.ToString('HH:mm')), shared with every download on this PC) ===" -ForegroundColor Cyan
+            $turn = Wait-AcctTurn
+            if ($turn -eq 'stop') { $stopReason = 'Stopped by ytdl -Stop.'; break }
+            if ($turn -eq 'breaker') {
+                Write-Host "`nAnother download on this PC is still limited; stopping this one too. Partial download is kept." -ForegroundColor Yellow
+                $stopReason = Get-BreakerText (Read-GlobalPace); $breakerStop = $true; break
+            }
+            Write-Host "=== Restarting $restartWhy ===" -ForegroundColor Cyan
+            $restartWait = 5
+        } elseif ($restartNow) {
             $restartNow = $false
             Write-Host "`n=== Restarting $restartWhy (waiting $restartWait s) ===" -ForegroundColor Cyan
             if (-not (Wait-OrStop $restartWait)) { $stopReason = 'Stopped by ytdl -Stop.'; break }
@@ -4408,10 +4491,10 @@ try {
             # or on the 2nd bot-check episode in 10 min on this PC. Each trip doubles the clean streak needed.
             $top = $paceLevels.Count - 1; $wasTop = $paceLevel -ge $top
             $decayNeed = [math]::Min(200, $decayNeed * 2)
-            $what = if ($paceWas429) { 'YouTube is rate-limiting' } else { 'YouTube asked to confirm this is not a bot' }
+            $what = if ($paceAcct) { 'YouTube has rate-limited this account' } elseif ($paceWas429) { 'YouTube is rate-limiting' } else { 'YouTube asked to confirm this is not a bot' }
             if ($autoPace) { Set-PaceLevel ([math]::Min($top, $paceLevel + $(if ($paceWas429) { 2 } else { 1 }))); Save-PaceLevel }
             $cleanVids = 0
-            Write-LogOnly "[ytdl-event] limit: $(if ($paceWas429) { '429' } else { 'bot' }) at level $paceLevel"
+            Write-LogOnly "[ytdl-event] limit: $(if ($paceAcct) { 'acct' } elseif ($paceWas429) { '429' } else { 'bot' }) at level $paceLevel"
             if (-not $paceWas429 -and $paceIdent -eq 'Out' -and $SignInOnBlock -and -not $signedSwitch) {
                 # 1.32.0: record the signed-out episode (other signed-out runs back off), but don't open the guard
                 if ($breakerOn -and -not $paceSim) { $null = Add-PaceEvent 'bot' $paceLevel }
@@ -4431,6 +4514,28 @@ try {
                 }
             } elseif (-not $paceWas429 -and ($wasTop -or -not $autoPace) -and ++$maxTrips -ge 5) {
                 $stopReason = "$what at the slowest pacing, 5 times (-IgnoreCooldown). Wait an hour or more before trying again."; break
+            }
+            if ($paceAcct) {
+                # 1.33.0: join the shared wait; after $acctCapSec of it, stop (the breaker, exit 75)
+                $acct = Enter-AcctLimit; $acctActive = $true
+                if ($acct.Over) {
+                    $acctActive = $false; Clear-AcctLimit
+                    Write-Host "`n$what for over $([math]::Round($acctCapSec / 60)) min; stopped yt-dlp. Partial download is kept." -ForegroundColor Yellow
+                    if ($breakerOn) { Open-Breaker 'acct'; $stopReason = Get-BreakerText (Read-GlobalPace); $breakerStop = $true }
+                    else { $stopReason = "$what for over $([math]::Round($acctCapSec / 60)) min (-IgnoreCooldown). Wait an hour or more before trying again." }
+                    break
+                }
+                if ($acct.First) {
+                    $end = [DateTimeOffset]::FromUnixTimeSeconds([int64]($acct.Since + $acctCapSec)).LocalDateTime
+                    Write-Host "`n[ytdl] $what (YouTube says for up to an hour); stopped yt-dlp. Partial download is kept." -ForegroundColor Yellow
+                    Write-Host "[ytdl] Every download on this PC now waits together, and one video is tried every $([math]::Round($acctWaitSec / 60)) min until about $($end.ToString('HH:mm')); then ytdl stops (exit 75). Ctrl+C is safe: re-run the same command later to continue." -ForegroundColor Yellow
+                    if ($Browser -or $Cookies) { Write-Host "[ytdl] Or try the same command without $(if ($Browser) { '-Browser' } else { '-Cookies' }): the limit is on the account, not this PC (signed out can bring bot checks instead)." -ForegroundColor Yellow }
+                } else {
+                    Write-Host "`n[ytdl] $what; waiting with the other downloads on this PC. Partial download is kept." -ForegroundColor Yellow
+                }
+                Write-Host "[ytdl] $(Get-PaceStatus)" -ForegroundColor DarkGray
+                $restartWhy = "after YouTube's account limit"; $acctTurn = $true
+                $restartNow = $true; $pass--; continue
             }
             Write-Host "`n$what; stopped yt-dlp and slowing down to pacing $(Get-PaceLabel). Partial download is kept." -ForegroundColor Yellow
             Write-Host "[ytdl] $(Get-PaceStatus)" -ForegroundColor DarkGray

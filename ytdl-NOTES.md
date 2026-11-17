@@ -1,10 +1,10 @@
-# ytdl 1.32.1 — Changelog & Logic Notes
+# ytdl 1.33.0 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.32.1 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.33.0 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -127,12 +127,24 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 | `-Version` | — | Print the version |
 | `-Worker`, `-WorkerCount`, `-NoScan`, `-LowResContent`, `-ContentHeight`, `-QueueFile` | — | Internal, set by `-Parallel` on its workers. Not for direct use. |
 
-**Exit codes:** `0` all done · `1` finished, but some videos still failed after retries · `2` stopped (`-Stop`, error loop, cookie-restart limit, or not enough disk space) · `3` another ytdl run already holds this output folder (1.2.1) · `75` YouTube limit guard: the run stopped or refused to start until the cooldown ends; re-run the same command after it (1.25.0).
+**Exit codes:** `0` all done · `1` finished, but some videos still failed after retries · `2` stopped (`-Stop`, error loop, cookie-restart limit, or not enough disk space) · `3` another ytdl run already holds this output folder (1.2.1) · `75` YouTube limit guard: the run stopped or refused to start until the cooldown ends; re-run the same command after it (1.25.0; also after an hour of YouTube's account limit, 1.33.0).
 
 ---
 
 ## Changelog
 
+### 1.33.0 — YouTube's account limit is its own signal (2026-11-17)
+
+| Part | Detail |
+|---|---|
+| **Why** | "Your account has been rate-limited by YouTube for up to an hour" (no 429, signed in) was handled as a plain 429: each worker printed its own restart and waited 5 min alone, and nothing on screen said what it was. suite14 r1 (2026-11-16): 1.32.0 still got 6/6 in 1,294 s by retrying (1.24.2 3/6, yt-dlp 0/6), so ytdl keeps trying rather than stopping at the first hit |
+| **Now** | The message is classified as `acct` (`[ytdl-event] limit: acct`). The first hit starts one shared wait for every run on the PC (pace file `AcctSince`/`AcctUntil`): after 5 min one process tries one video (`AcctProbe`, a 120 s turn); the others wait for it. A clean video ends the wait for all; a failed probe starts another 5 min |
+| **On screen** | Once per episode: the account notice, "one video is tried every 5 min until about HH:MM; then ytdl stops (exit 75)", Ctrl+C is safe, and, when signed in, a hint to try the same command without `-Browser`/`-Cookies` (suggested only, never switched). Other workers print one short "waiting with the other downloads" line |
+| **Cap** | Still limited after 60 min: the breaker opens with kind `acct` (exit 75, same cooldown text and `-IgnoreCooldown` escape as the bot breaker) |
+| **Unchanged** | Bot checks, plain 429s and caption 429s behave as in 1.32.1. The account message still raises pacing like a 429. The "3 unavailable while signed in" hint skips account-limit lines |
+| **Tests** | `YTDL_TEST_ACCTLIMIT=n` (nth progress line becomes the message), `YTDL_TEST_ACCTSTUCK=1`, `YTDL_TEST_ACCTWAIT`/`YTDL_TEST_ACCTCAP` (seconds); only with `YTDL_STATE` set to a test folder |
+
+**Verified:** Check-Ytdl ok. tests\v1.33.0.ps1 offline 28/28 (all 29 rate-limited lines in the archived suite14 logs classify as `acct`). tests\v1.33.0-partB.ps1 online 11/11 (3 videos, 360p, -Parallel 2, signed in, temp state): simulated hit -> one notice, shared 20 s wait, 3/3 saved, episode cleared, exit 0 in 64 s; stuck with a 60 s cap -> exit 75, breaker kind `acct`, in 82 s. Includes 1.32.1.
 ### 1.32.1 — one pause per video, not one per stream (2026-11-17)
 
 | Part | Detail |
