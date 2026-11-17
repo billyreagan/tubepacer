@@ -1,6 +1,6 @@
 # How tubepacer paces itself
 
-This page describes the pacing design in tubepacer 1.32.0 in enough detail to reimplement it. The code is in `ytdl.ps1`: look for `limit guard`, `Step-Budget` and `$paceLevels`. Where this page and the code disagree, the code is right; please [open an issue](https://github.com/billyreagan/tubepacer/issues).
+This page describes the pacing design in tubepacer 1.33.0 in enough detail to reimplement it. The code is in `ytdl.ps1`: look for `limit guard`, `Step-Budget` and `$paceLevels`. Where this page and the code disagree, the code is right; please [open an issue](https://github.com/billyreagan/tubepacer/issues).
 
 The design has one rule: **ask YouTube less often**. It doesn't hide. tubepacer doesn't rotate proxies or IP addresses, fake browser fingerprints, or cycle cookies across accounts.
 
@@ -37,7 +37,7 @@ The request pause gets ±50% jitter, drawn fresh each time yt-dlp is launched, b
 
 - **Bot check:** up one level.
 - **429:** up two levels.
-- **25 videos in a row without a bot check, and no limit hit on the PC for 30 minutes:** down one level, to no lower than the floor. Each trip in a run doubles the clean streak needed (up to 200).
+- **A clean streak, and no limit hit on the PC for 30 minutes:** down one level, to no lower than the floor. The streak needed starts at 25 videos and doubles on every trip in a run, so the first step down needs 50 clean videos, then 100, then 200 (the cap).
 - Level changes take effect from the next video.
 - **Between runs:** the saved level loses one level for every two hours without a bot check. This applies to the folder's `.ytdl-pace.json` and to the level the last trip reached on this PC, which is kept in `pace.json`.
 
@@ -74,6 +74,7 @@ Before 1.25, pacing had no ceiling action. At L5 nothing more happened: one benc
 | Signal | Class | Action |
 |---|---|---|
 | HTTP 429, "Too Many Requests", "isn't available, try again later" | Over budget | Up 2 levels; the run carries on |
+| "Your account has been rate-limited by YouTube for up to an hour" (since 1.33) | Account limit | Up 2 levels. Every run on the PC waits together; one video is tried every 5 min. A clean video ends the wait. Still limited after 60 min: the breaker opens (exit 75). Signed in: suggest trying without `-Browser`/`-Cookies` |
 | "Confirm you're not a bot", signed out | IP reputation | Up 1 level. The first time, suggest `-Browser` or `-SignInOnBlock`. With `-SignInOnBlock`, switch to signed in once instead |
 | "Confirm you're not a bot", signed in | Pacing | Up 1 level. The breaker opens on a second one within 10 min, or one at L5 |
 | "Video unavailable" 3 times, signed in | The account may be flagged | Suggest trying without `-Browser`/`-Cookies` |
@@ -97,7 +98,7 @@ Measured on one Windows PC and home connection. Every run, script and raw result
 
 - **Signed in, adaptive pacing (1.24):** 0 bot checks in 208 videos (E5–E6). On the same 6 videos it was 3.3× faster than yt-dlp's fixed sleeps (E5).
 - **Signed out:** no replicated result. The planned rerun was bot-blocked four times on 2026-11-16 and was dropped, so the report makes no signed-out bot-check claim.
-- **1.25.0 and later against 1.24.2:** *to be measured.* This covers the E5 and E6 reruns signed in, and a new E5R that counts the requests sent between the first bot check and the next saved file.
+- **1.32.0 against 1.24.2 (T3-lite, 2026-11-17, signed in; rough: 3 videos, 2 rounds):** 0 bot checks or 429s for either in 9 videos. On 3 videos at 1080p (E5) 1.32.0 was slower: 58.8 s against 45.4 s (0.78×, 95% interval 0.31–1.97, 0 of 2 rounds won). Two of its runs started at a raised pace level left over from earlier runs, since the guard steps down only after a clean streak and 30 quiet minutes. Against plain yt-dlp's fixed sleeps (102.2 s, baseline from 2026-11-13) that is 1.74× for 1.32.0 and 2.25× for 1.24.2. After one simulated bot check (E5R, 1 round) both sent about the same number of requests before the next saved file (12 against 13), but 1.32.0 waited longer (105 s against 39 s) and took 155.6 s against 56.7 s. E6 (first byte) was not rerun.
 
 Not measured:
 

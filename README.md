@@ -7,7 +7,7 @@
   </picture>
 </a>
 
-<!-- TODO (E3): add a short recording of a real run here (for example .github/run.gif from an actual 12-video job). Use a real capture only, never a staged one. -->
+<img alt="A real tubepacer run: two videos downloaded at 720p by two parallel workers, signed in, in 57 seconds (shown at 2x speed)" src=".github/run.gif" width="760">
 
 tubepacer downloads YouTube videos, playlists and channels on Windows. It keeps itself under YouTube's limits: full speed when it can, a measured step back when YouTube pushes back, and a full stop before a slowdown turns into a ban. It runs downloads in parallel and tells you how long a job will take before it starts. Built on [yt-dlp](https://github.com/yt-dlp/yt-dlp).
 
@@ -212,13 +212,13 @@ It has three parts, and all ytdl runs and workers on the PC share them through `
 
 **Budget.** A shared one-hour log of YouTube requests (page, player, caption and size checks, retries included). The limit is 700 requests an hour signed out and 4,700 signed in: at about 4.7 requests a video that is 150 and 1,000 videos, about half of the figures in yt-dlp's wiki. At 80% of the limit the run slows down one level. Over the limit, it waits until enough of the hour's oldest requests drop out, then carries on.
 
-**Steps.** There are six levels, from L0 (no pauses) to L5 (20–40 s between videos, 3 s before each request). A bot check moves the run up one level and a 429 moves it up two; a change takes effect from the next video. All parallel workers follow the slowest. After 25 videos in a row without a bot check, and no limit hit on the PC for 30 minutes, the run comes down one level; each new trip in a run doubles the clean streak needed (up to 200). It never goes below its starting level: L1 signed in (L0 for 20 videos or fewer) and L3 signed out. A step-back is saved and loses one level for every two hours without a bot check, so the next run starts where it should.
+**Steps.** There are six levels, from L0 (no pauses) to L5 (20–40 s between videos, 3 s before each request). A bot check moves the run up one level and a 429 moves it up two; a change takes effect from the next video. All parallel workers follow the slowest. Every trip in a run doubles the clean streak needed to come back down, from 25 to 50 on the first trip, then 100 and 200 (the cap). The run comes down one level once it has that many videos in a row without a bot check and no limit has been hit on the PC for 30 minutes. It never goes below its starting level: L1 signed in (L0 for 20 videos or fewer) and L3 signed out. A step-back is saved and loses one level for every two hours without a bot check, so the next run starts where it should.
 
 **Breaker.** A bot check at L5, or a second bot check within 10 minutes on this PC, stops every run on the PC for one hour. A 429 never stops a run: it only slows it down. While the breaker is open, new runs print the time it closes and exit (code 75) without asking YouTube anything, so closing the window is fine. The first run after it checks one video before starting the rest, at the level that was held.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/pacing-dark.svg">
-  <img alt="Schematic of the pacing level over time. A fixed 5 s sleep stays flat. 1.24 climbs one level per bot check and stays at L5. 1.25 steps up after a bot check, steps down after 25 clean videos, stops for a 1 hour cooldown after a 429, checks one video, then resumes and steps down again." src=".github/pacing-light.svg" width="640">
+  <img alt="Schematic of the pacing level over time, signed in. A fixed 5 s sleep stays flat. tubepacer starts at L1, steps up one level on a bot check and back down after 50 clean videos, steps up two levels on a 429 and carries on, then comes down after 100 clean videos. Two bot checks within 10 minutes open the breaker: a 1 hour stop with no requests. One video is checked, and the run resumes at the held level." src=".github/pacing-light.svg" width="640">
 </picture>
 
 *Schematic, not a measurement.*
