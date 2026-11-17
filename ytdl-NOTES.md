@@ -1,10 +1,10 @@
-# ytdl 1.32.0 — Changelog & Logic Notes
+# ytdl 1.32.1 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.32.0 (2026-11-16) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.32.1 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -133,6 +133,16 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.32.1 — one pause per video, not one per stream (2026-11-17)
+
+| Part | Detail |
+|---|---|
+| **Fix** | yt-dlp's `--sleep-interval` waits before each download, and a merged video is two (video, then audio). Since 1.30.0 (pauses at every level) a merged video paused twice: at L0, 2-4 s per video, not the 1-2 s the banner says. suite15 round 2 (both versions at L0): 6 "Sleeping" lines for 3 videos, about 3.5 s per worker of the 18 s gap to 1.24.2 |
+| **Now** | When the first format choice merges two streams, each part gets half the range (L0: 0.5-1 s each), so a video pauses s to 2s in total, as the label says. Audio-only, `-Fast360` (format 18) and fixed `-Sleep` single-file downloads keep the full range. The first-run overhead estimate counts the pause once (1.5 x s, was 3 x s) |
+| **Start-up** | Workers inherit the coordinator's network id (`YTDL_NETKEY`) and skip the adapter scan (~40 ms each). Profiling showed 1.32.0 workers start only ~0.15 s slower than 1.24.2 (0.44 vs 0.29 s to the first yt-dlp call); suite15's ~1.2 s start-up gap was mostly network noise, not code |
+| **Unchanged** | The PC-wide pace memory (a real limit holds the level, one step per 2 h) stays: that is why suite15 round 1 started 1.32.0 at L3-L4 |
+
+**Verified:** Check-Ytdl ok. Real run 2026-11-17 (2 videos, 360p, -Parallel 2, signed in, L0): 4 "Sleeping" lines of 0.50-0.96 s (1.2-1.7 s per video; 1.32.0: 2 lines of 1-2 s each), both files saved, exit 0.
 ### 1.32.0 — -SignInOnBlock: switch to signed in only when blocked (2026-11-16)
 
 | Part | Detail |

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.32.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.32.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -290,7 +290,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.32.0'
+$YtdlVersion = '1.32.1'
 if ($Report -or $Fix) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report; 1.29.0: -Fix too
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -831,6 +831,7 @@ function Get-NetKey {
     try { -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((@($parts | Sort-Object) -join ';')))[0..3] | ForEach-Object { $_.ToString('x2') }) } finally { $sha.Dispose() }
 }
 $paceNetKey = Get-NetKey
+$env:YTDL_NETKEY = $paceNetKey   # 1.32.1: workers inherit it and skip the ~40 ms adapter scan each
 $globalPaceFile = Join-Path $stateDir "pace-$paceNetKey.json"
 if (-not (Test-Path -LiteralPath $globalPaceFile) -and (Test-Path -LiteralPath (Join-Path $stateDir 'pace.json')) -and
     -not (Get-ChildItem -LiteralPath $stateDir -Filter 'pace-*.json' -ErrorAction SilentlyContinue)) {
@@ -2261,6 +2262,7 @@ if (@($userDlArgs) -notcontains '--retry-sleep') {
     $ytArgs += @('--retry-sleep', 'extractor:exp=5:300', '--retry-sleep', 'http:exp=1:30', '--retry-sleep', 'fragment:exp=1:20')
 }
 
+$twoPart = $false   # 1.32.1: video + audio downloaded separately (see Get-PaceArgs)
 if ($AudioOnly) {
     # 1.21.0: m4a and opus keep YouTube's own stream (yt-dlp only rewraps it when the codec already matches)
     switch ($(if ($AudioFormat) { $AudioFormat } else { 'mp3' })) {
@@ -2280,6 +2282,7 @@ if ($AudioOnly) {
     }
     $merge = switch ($Container) { 'mkv' { 'mkv' } 'webm' { 'webm/mkv' } default { 'mp4' } }   # 1.23.0
     $ytArgs += @('-f', $fmt, '--merge-output-format', $merge)
+    $twoPart = ($fmt -split '/')[0] -match '\+'   # first choice merges two downloads (not -Fast360's format 18)
 }
 
 # 1.23.0: -SubLangs picks the languages (implies -Subs); -LiveChat adds the chat replay (a .json file, never embedded)
@@ -2431,7 +2434,13 @@ function Get-PaceArgs {
     # 1.25.0: +/-50% on the request pause, new each launch (yt-dlp's own value is fixed, which is a pattern)
     if ($autoPace -and $r -gt 0) { $r = [math]::Round($r * (0.5 + (Get-Random -Minimum 0.0 -Maximum 1.0)), 2) }
     $a = @()
-    if ($s -gt 0) { $a += @('--sleep-interval', $s, '--max-sleep-interval', ($s * 2)) }
+    # 1.32.1: yt-dlp sleeps before EACH download, and a merged video is two (video, then audio), so it paused
+    # twice per video (suite15: 6 "Sleeping" lines for 3 videos at L0). Half the range per part keeps the
+    # total at s to 2s per video, as the label says. yt-dlp takes decimals here.
+    if ($s -gt 0) {
+        $lo = if ($script:twoPart) { $s / 2 } else { $s }; $inv = [Globalization.CultureInfo]::InvariantCulture
+        $a += @('--sleep-interval', ([double]$lo).ToString($inv), '--max-sleep-interval', ([double]$lo * 2).ToString($inv))
+    }
     if ($r -gt 0) { $a += @('--sleep-requests', $r.ToString([Globalization.CultureInfo]::InvariantCulture)) }
     # 1.25.0: captions have a stricter limit of their own; after a subtitle 429, pause 10 s before each one
     # 1.31.0: 5 s before each caption whenever captions are asked for, at every level and with fixed pacing
@@ -2716,7 +2725,7 @@ function ConvertTo-MiB([double]$v, [string]$unit) {
 # 1.4.0 L0 (S 0, R 0.5, fast): 6.0 s (measured 6.3). Old -Sleep 5, default clients: 25 s (measured 24-25).
 function Get-PriorOverhead {
     $n = if ($script:fastClient) { 4 } else { 6 }
-    3 * (Get-PaceSleep) + $n * (Get-PaceReq) + 5.5   # 1.6.1: +4 -> +5.5 (real runs at L0: 5.9 s single and per parallel worker)
+    $(if ($script:twoPart) { 1.5 } else { 3 }) * (Get-PaceSleep) + $n * (Get-PaceReq) + 5.5   # 1.32.1: mean s..2s per video, once (merged videos paused twice before); 1.6.1: +4 -> +5.5 (real runs at L0: 5.9 s single and per parallel worker)
 }
 # Typical YouTube bitrate, MiB per second of video, by quality cap (rough; data takes over quickly).
 # Measured on Blender uploads: 360p 0.0235, 480p 0.0287 (1.1.0), 720p 0.0545, 1080p 0.0799 (1.2.1) MiB/s.
