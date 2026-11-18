@@ -1,10 +1,10 @@
-# ytdl 1.33.0 — Changelog & Logic Notes
+# ytdl 1.33.1 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.33.0 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.33.1 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -133,6 +133,14 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.33.1 — a URL starting with '-' stops at once (2026-11-17)
+
+| Part | Detail |
+|---|---|
+| **Fix** | A value starting with `-` in the URL slot (a script splatting `-?`, or a misspelled switch) went to yt-dlp as the URL. yt-dlp read it as its own option, failed with exit 2 ("no such option"), and ytdl ran 3 retry passes. Found by `-Doctor` on 2026-11-17: the last-run WARN was a 15 Nov 1.25.0 run started with `& $ytdl @bind` and Url `-?` |
+| **Now** | ytdl prints "'<value>' is not a URL: it starts with '-' ..." and exits 1 before the lock, the log or any yt-dlp call. Numbers (`-Unsubscribe 2`) and real URLs are unchanged |
+
+**Verified:** Check-Ytdl ok. tests\v1.33.1.ps1 (offline): 17 passed, 0 failed (`-?`, `--format`, `-Quality` splatted: exit 1, the message, no yt-dlp call, no lock or log; `-Version`, a number and a channel URL still pass).
 ### 1.33.0 — YouTube's account limit is its own signal (2026-11-17)
 
 | Part | Detail |

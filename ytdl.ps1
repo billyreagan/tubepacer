@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.33.0 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.33.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -290,7 +290,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.33.0'
+$YtdlVersion = '1.33.1'
 if ($Report -or $Fix) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report; 1.29.0: -Fix too
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -621,6 +621,12 @@ function ConvertTo-ChannelUrl([string]$u) {
         return "https://www.youtube.com/$($Matches[1])/videos"
     }
     $u
+}
+# 1.33.1: a "URL" that starts with '-' is an option that landed in the URL slot (a script splatting '-?' or a
+# misspelled switch); yt-dlp would read it as its own option and fail with exit 2 plus 3 retry passes. Stop here.
+if ($Url -like '-*') {
+    Write-Host "[ytdl] '$Url' is not a URL: it starts with '-', so it looks like an option. Check the spelling (ytdl options: Get-Help ytdl), or pass yt-dlp options with -YtdlpArgs." -ForegroundColor Yellow
+    exit 1
 }
 if ($Url -and $Url -notmatch '^\d+$') {
     $chUrl = ConvertTo-ChannelUrl $Url
