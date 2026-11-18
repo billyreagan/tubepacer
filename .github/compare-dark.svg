@@ -4,7 +4,7 @@
   <rect x="0.5" y="0.5" width="959" height="747" rx="12" fill="none" stroke="#1f3550"/>
   <g font-family="Segoe UI, Helvetica, Arial, sans-serif">
     <text x="40" y="40" font-size="20" font-weight="600" fill="#f8fafc">tubepacer led 12 of 19 comparisons, tied 7, and was never behind</text>
-    <text x="40" y="64" font-size="14" fill="#94a3b8" >Other tool&apos;s time divided by tubepacer&apos;s, with 95% interval; yt-dlp unless named. Report v3.7, Tables 1 and 2.</text>
+    <text x="40" y="64" font-size="14" fill="#94a3b8" >Other tool&apos;s time divided by tubepacer&apos;s, with 95% interval; yt-dlp unless named. Report v3.9, Tables 1 and 2.</text>
     <text x="40" y="84" font-size="14" fill="#94a3b8" >Lead: interval above 1× and Holm p &lt; 0.05. 12 videos, signed in (W2) clears its interval but not Holm (p 0.098): a tie.</text>
     <text x="40" y="106" font-size="12.5" fill="#94a3b8" >Comparison (test)</text>
 <text x="716" y="106" font-size="12.5" fill="#94a3b8" >ratio</text>

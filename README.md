@@ -358,7 +358,7 @@ Tools run in paired rounds on the same videos. A lead counts only if its 95% int
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/compare-dark.svg">
-  <img alt="All 19 comparisons as ratios of the other tool's time to tubepacer's, log scale, with 95% intervals: 13 leads from 1.26× (formats 1080p and higher, E11) to 37.37× (size of 50 videos, R6E), ties with yt-pdlp (0.99×, E8) and signed out (0.94×, R4), and 4 count-only ties; tubepacer was behind in none" src=".github/compare-light.svg" width="960">
+  <img alt="All 19 comparisons as ratios of the other tool's time to tubepacer's, log scale, with 95% intervals: 12 leads from 1.26× (formats 1080p and higher, E11) to 37.37× (size of 50 videos, R6E), ties with yt-pdlp (0.99×, E8), signed out (0.94×, R4) and 12 videos signed in (1.58×, W2, not significant after Holm), and 4 count-only ties; tubepacer was behind in none" src=".github/compare-light.svg" width="960">
 </picture>
 
 <picture>
