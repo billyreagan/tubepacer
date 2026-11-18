@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.33.1 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.33.2 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -290,7 +290,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.33.1'
+$YtdlVersion = '1.33.2'
 if ($Report -or $Fix) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report; 1.29.0: -Fix too
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -855,6 +855,8 @@ $limitAcctPattern = 'rate-limited by YouTube|account has been rate-limited'
 $acctWaitSec = 300; $acctCapSec = 3600
 $acctEnv = 0; if ([int]::TryParse("$env:YTDL_TEST_ACCTWAIT", [ref]$acctEnv) -and $acctEnv -gt 0) { $acctWaitSec = $acctEnv }   # test hooks
 $acctEnv = 0; if ([int]::TryParse("$env:YTDL_TEST_ACCTCAP", [ref]$acctEnv) -and $acctEnv -gt 0) { $acctCapSec = $acctEnv }
+# 1.33.2: "5 min", or "20 s" under 90 s (the test hooks printed "every 0 min")
+function Format-AcctSpan([int]$sec) { if ($sec -lt 90) { "$sec s" } else { "$([math]::Round($sec / 60)) min" } }
 function Get-LimitKind([string]$line) { if ($line -match $limitAcctPattern) { 'acct' } elseif ($line -match $limit429Pattern) { '429' } else { 'bot' } }
 # 1.30.0: requests counted from yt-dlp's own lines (about 4-5 per video); "Downloading 50 items of 50" is not one
 $reqLinePattern = '^\[youtube(?::tab)?\] [^:]+: Downloading (?!\d+ items)|^\[info\] Writing video (?:automatic )?subtitles'
@@ -902,7 +904,7 @@ function Update-GlobalPace([scriptblock]$change) {
 function Get-BreakerLeft($g) { [math]::Max(0.0, [double]$g.CooldownUntil - (Get-Epoch)) }
 function Get-BreakerText($g) {
     $until = [DateTimeOffset]::FromUnixTimeSeconds([int64]$g.CooldownUntil).LocalDateTime
-    $why = switch ($g.Kind) { '429' { 'a rate limit (HTTP 429)' } 'acct' { "YouTube's limit on this account, still there after $([math]::Round($acctCapSec / 60)) min" } 'max' { 'bot checks at the slowest pacing' } 'budget' { 'the hourly budget' } default { 'repeated bot checks' } }
+    $why = switch ($g.Kind) { '429' { 'a rate limit (HTTP 429)' } 'acct' { "YouTube's limit on this account, still there after $(Format-AcctSpan $acctCapSec)" } 'max' { 'bot checks at the slowest pacing' } 'budget' { 'the hourly budget' } default { 'repeated bot checks' } }
     $day = if ($until.Date -ne (Get-Date).Date) { $until.ToString('ddd ') } else { '' }
     "YouTube limit guard: no downloads until $day$($until.ToString('HH:mm')) ($([math]::Ceiling((Get-BreakerLeft $g) / 60)) min left) after $why on this PC (-IgnoreCooldown starts anyway). Closing this window is fine: a run started before then stops with this message, and the first one after it checks one video before the rest."
 }
@@ -4145,7 +4147,7 @@ $watchdog = [powershell]::Create()
             $s.LastPaceCheck = Get-Date
             $lvl = -1
             try { $pf = Get-Content $s.PaceFile -Raw -ErrorAction Stop | ConvertFrom-Json; $lvl = [int]$pf.Level } catch { }
-            if ($lvl -gt $s.Level) { $s.Abort = 'pacesync'; $s.NewLevel = $lvl; $s.Running = $false; & $kill $s.ParentPid }
+            if ($lvl -gt $s.Level -and $lvl -gt [int]$s.SyncLevel) { $s.SyncLevel = $lvl }   # 1.33.2: acted on at the next video boundary
         }
     }
 }).AddArgument($runState).AddArgument($killTree.ToString())
@@ -4195,6 +4197,7 @@ function Invoke-Pass([string[]]$passArgs) {
     $script:frag403 = 0
     $script:consecErrors = 0
     $script:pendingAbort = $null
+    $runState.SyncLevel = -1   # 1.33.2
     $runState.Abort = $null; $runState.Last = Get-Date; $runState.Running = $true
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # stderr lines must not terminate
     try {
@@ -4223,6 +4226,12 @@ function Invoke-Pass([string[]]$passArgs) {
             if ($line -match $reqLinePattern) { $script:reqPending++ }
             if ($script:pendingAbort -and -not $runState.Abort -and $line -match '^\[download\] Downloading item \d+ of \d+|^\[youtube\] Extracting URL:') {
                 $runState.Abort = $script:pendingAbort; $runState.Running = $false
+                & $killTree $PID
+            }
+            # 1.33.2: follow a slower folder level at the next video boundary, not mid-video (the old cut-off
+            # lost a finished stream, which was downloaded again; suite17 acct run, 2026-11-17)
+            if (-not $runState.Abort -and [int]$runState.SyncLevel -gt [int]$runState.Level -and $line -match '^\[download\] Downloading item \d+ of \d+|^\[youtube\] Extracting URL:') {
+                $runState.NewLevel = $runState.SyncLevel; $runState.Abort = 'pacesync'; $runState.Running = $false
                 & $killTree $PID
             }
 
@@ -4526,15 +4535,15 @@ try {
                 $acct = Enter-AcctLimit; $acctActive = $true
                 if ($acct.Over) {
                     $acctActive = $false; Clear-AcctLimit
-                    Write-Host "`n$what for over $([math]::Round($acctCapSec / 60)) min; stopped yt-dlp. Partial download is kept." -ForegroundColor Yellow
+                    Write-Host "`n$what for over $(Format-AcctSpan $acctCapSec); stopped yt-dlp. Partial download is kept." -ForegroundColor Yellow
                     if ($breakerOn) { Open-Breaker 'acct'; $stopReason = Get-BreakerText (Read-GlobalPace); $breakerStop = $true }
-                    else { $stopReason = "$what for over $([math]::Round($acctCapSec / 60)) min (-IgnoreCooldown). Wait an hour or more before trying again." }
+                    else { $stopReason = "$what for over $(Format-AcctSpan $acctCapSec) (-IgnoreCooldown). Wait an hour or more before trying again." }
                     break
                 }
                 if ($acct.First) {
                     $end = [DateTimeOffset]::FromUnixTimeSeconds([int64]($acct.Since + $acctCapSec)).LocalDateTime
                     Write-Host "`n[ytdl] $what (YouTube says for up to an hour); stopped yt-dlp. Partial download is kept." -ForegroundColor Yellow
-                    Write-Host "[ytdl] Every download on this PC now waits together, and one video is tried every $([math]::Round($acctWaitSec / 60)) min until about $($end.ToString('HH:mm')); then ytdl stops (exit 75). Ctrl+C is safe: re-run the same command later to continue." -ForegroundColor Yellow
+                    Write-Host "[ytdl] Every download on this PC now waits together, and one video is tried every $(Format-AcctSpan $acctWaitSec) until about $($end.ToString('HH:mm')); then ytdl stops (exit 75). Ctrl+C is safe: re-run the same command later to continue." -ForegroundColor Yellow
                     if ($Browser -or $Cookies) { Write-Host "[ytdl] Or try the same command without $(if ($Browser) { '-Browser' } else { '-Cookies' }): the limit is on the account, not this PC (signed out can bring bot checks instead)." -ForegroundColor Yellow }
                 } else {
                     Write-Host "`n[ytdl] $what; waiting with the other downloads on this PC. Partial download is kept." -ForegroundColor Yellow
@@ -4576,7 +4585,7 @@ try {
         }
         if ($runState.Abort -eq 'pacesync') {
             Set-PaceLevel ([math]::Min([int]$runState.NewLevel, $paceLevels.Count - 1))
-            Write-Host "`nAnother download in this folder slowed down after a bot check; following it to pacing $(Get-PaceLabel)." -ForegroundColor Yellow
+            Write-Host "`nAnother download in this folder slowed down after a YouTube limit; following it to pacing $(Get-PaceLabel)." -ForegroundColor Yellow
             $restartWhy = "at pacing $(Get-PaceLabel)"; $restartNow = $true; $pass--; continue
         }
 

@@ -1,10 +1,10 @@
-# ytdl 1.33.1 — Changelog & Logic Notes
+# ytdl 1.33.2 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.33.1 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.33.2 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -133,6 +133,15 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.33.2 — workers follow a slower folder level between videos (2026-11-17)
+
+| Part | Detail |
+|---|---|
+| **Fix** | When another worker in the folder slowed down (a bot check, a 429 or the account limit), the others killed yt-dlp at once to follow it, mid-video. In the suite17 account-limit run (2026-11-17) that cut off w2 just after its 9.6 MiB video stream finished; it restarted at L2 and downloaded the stream again. The message also said "after a bot check" whatever the cause |
+| **Now** | The watchdog only records the slower level; the worker restarts at it at the next video boundary (the same rule as its own level changes since 1.30.0). The message says "after a YouTube limit" |
+| **Fix** | Account-limit notices rounded to whole minutes, so the test hooks (`YTDL_TEST_ACCTWAIT=20`) printed "tried every 0 min". Spans under 90 s now print in seconds ("every 20 s"); 5 min and 60 min are unchanged |
+
+**Verified:** Check-Ytdl ok. tests\v1.33.2.ps1 (offline): 12 passed. tests\v1.33.0.ps1: 27 passed (only the version line differs). Live, simulated account limit (2 videos, 2 workers, wait 20 s): w2 finished its video with no restart, notice "every 20 s", 2/2 files, exit 0, 52.2 s.
 ### 1.33.1 — a URL starting with '-' stops at once (2026-11-17)
 
 | Part | Detail |
@@ -302,7 +311,7 @@ YouTube's limits are per IP and per account, escalate when ignored (bot check, t
 | **`-Feed` / `-FeedBase`** | Subscription options. After retention, `-Sync` writes `feed.xml` in the subscription's folder from its file list: files that still exist, newest upload first, title without `[id]`, guid `yt:<id>`, enclosure with size and MIME type. `-FeedBase http://host/path` builds the links from the file's path inside the folder (URL-escaped); without it they are `file:///`. Written atomically (via .tmp) |
 | **Includes 1.22.1** | The rate-limit fix (rate limits are transient, not "won't fix itself") is in this version too |
 
-**Verified:** `tests\v1.23.0.ps1` part A 23/23 (offline): refusals for -Section, -Template, -YtdlpArgs, -Container, -Codec, -Live (with -Section, playlist, channel tab), -Feed without -Subscribe, non-http -FeedBase; -History from a fake history.tsv (sizes, deleted, audio, -Match, N); Write-SubFeed (loaded by AST) on a fake folder: valid XML, 2 of 3 episodes (one deleted), newest first, escaped FeedBase links, MIME types, file:/// without FeedBase, off without -Feed. yt-dlp's history line checked on a local file (`--enable-file-urls`) in a folder with `%` in its name. Part B (online, 360p or less): pending (released before it, by the user's choice, while YouTube rate-limited the test account). -Live on a real stream: pending, same reason. Check-Ytdl: ascii, parse 7/5.1, names ok.
+**Verified:** `tests\v1.23.0.ps1` part A 23/23 (offline): refusals for -Section, -Template, -YtdlpArgs, -Container, -Codec, -Live (with -Section, playlist, channel tab), -Feed without -Subscribe, non-http -FeedBase; -History from a fake history.tsv (sizes, deleted, audio, -Match, N); Write-SubFeed (loaded by AST) on a fake folder: valid XML, 2 of 3 episodes (one deleted), newest first, escaped FeedBase links, MIME types, file:/// without FeedBase, off without -Feed. yt-dlp's history line checked on a local file (`--enable-file-urls`) in a folder with `%` in its name. Part B (online, rerun 2026-11-17 on 1.33.1, light: 144p, signed out with -SignInOnBlock firefox, 5 downloads): 38/38 plus -SplitChapters 6/6 -- mkv + -SubLangs en,de (eng,deu embedded) + -Codec av1 + -Template in one run; webm vp9 + thumbnail; h264 + -Section 0:05-0:15 (10 s, clip name, clip archive, main archive untouched); -LiveChat on a past stream (333 KB); -SplitChapters (k6l1CK0O_r4, 6 files); -Subscribe saves all new options. -Live on a real stream (JoWTxdBdv2c, 60 s): still recording, 265 MB written (from start, catching up), no errors. YouTube bot-checked the signed-out runs; -SignInOnBlock switched to firefox each time. The earlier part B could never pass: its Run helper rejected -Out as ambiguous (fixed in the test). Check-Ytdl: ascii, parse 7/5.1, names ok.
 ### 1.22.1 — YouTube's rate limit is no longer "won't fix itself" (2026-11-14)
 | Change | Detail |
 |---|---|
