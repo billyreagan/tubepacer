@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  ytdl 1.33.2 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
+  ytdl 1.33.3 - Download a YouTube video, playlist or channel from a single URL (wrapper around yt-dlp).
   Changelog and design notes: ytdl-NOTES.md (same folder).
 
 .EXAMPLE
@@ -290,7 +290,7 @@ param(
     [string]$QueueFile       # 1.7.0: the coordinator's scan of this worker's share (worker skips its own scan)
 )
 
-$YtdlVersion = '1.33.2'
+$YtdlVersion = '1.33.3'
 if ($Report -or $Fix) { $Doctor = [switch]$true }   # 1.26.0: -Report alone means -Doctor -Report; 1.29.0: -Fix too
 $ItemsStr = (@($Items) | Where-Object { $_ } | ForEach-Object { "$_".Trim() }) -join ','
 if ($AudioFormat) { $AudioOnly = [switch]$true }   # 1.21.0
@@ -2687,13 +2687,19 @@ $queueDate  = @{}   # id -> approximate upload date yyyyMMdd (1.16.0: channel ta
 # a channel tab's flat listing carry upload dates ("2 weeks ago", so +-days) at no extra cost.
 function Get-ScanArgs {
     $scan = @('--flat-playlist', '--yes-playlist', '--extractor-args', 'youtubetab:approximate_date',
-              '--print', '%(id)s %(duration)s %(playlist_index)s %(upload_date)s %(title)s') + $authArgs
+              '--print', '%(id)s %(duration)s %(playlist_index)s %(upload_date)s %(title)s',
+              # 1.33.3: the playlist's own fields too (no extra requests), for the workers' playlist file
+              '--print', "ytdl-pl`t%(playlist_count|)s`t%(playlist_id|)s`t%(playlist_uploader|)s`t%(playlist_uploader_id|)s`t%(playlist_channel|)s`t%(playlist_channel_id|)s`t%(playlist_webpage_url|)s`t%(playlist_title|)s") + $authArgs
     if ($ItemsStr) { $scan += @('--playlist-items', $ItemsStr) }
     $scan + $Url
 }
 function ConvertFrom-ScanLines($lines) {
     $q = [ordered]@{}
     foreach ($l in $lines) {
+        if ("$l" -like "ytdl-pl`t*") {
+            if (-not $script:plMeta) { $m = "$l" -split "`t"; if ($m.Count -ge 9) { $script:plMeta = $m } }
+            continue
+        }
         $p = "$l".Trim() -split ' ', 5
         if ($p[0] -match '^[\w-]{11}$') {
             $d = 0.0
@@ -2710,8 +2716,14 @@ function ConvertFrom-ScanLines($lines) {
 function Get-Queue {
     $scan = Get-ScanArgs
     $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-    $lines = & $ytdlp @scan 2>$null
+    $all = @(& $ytdlp @scan 2>&1)
     $ErrorActionPreference = $eap
+    # 1.33.3: workers read the playlist file and no longer list, so the scan's warnings give the deleted notice.
+    $err = @($all | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" })
+    $lines = @($all | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+    if (-not $script:deletedNoted -and @($err | Where-Object { $_ -match 'removed from the playlist because they were deleted|unavailable videos are hidden' }).Count) {
+        $script:deletedNoted = $true
+        Write-Host "[ytdl] Some videos in this playlist were deleted from YouTube; they're skipped." -ForegroundColor DarkGray }
     $q = ConvertFrom-ScanLines $lines
     Add-Requests (3 + [math]::Ceiling($q.Count / 100))   # 1.30.0: a listing is about 1 page request per 100 videos
     return $q
@@ -3225,6 +3237,14 @@ elseif ($QueueFile -and (Test-Path -LiteralPath $QueueFile)) {
     } catch { $queue = [ordered]@{} }
     Remove-Item -LiteralPath $QueueFile -Force -ErrorAction SilentlyContinue
     Write-LogOnly "[ytdl-event] video list from the coordinator: $($queue.Count) video(s)"
+}
+# 1.33.3: ...and yt-dlp reads the playlist from the coordinator's file instead of listing it again
+# (a real 3-worker run: each worker fetched the playlist twice, for one video each). If yt-dlp can't
+# use the file it falls back to the URL itself ("trying with URL"), so this can't lose a video.
+$plFile = $env:YTDL_PLAYLIST_JSON
+if ($fromCoordinator -and $Worker -gt 0 -and $plFile -and (Test-Path -LiteralPath $plFile) -and $ytArgs -contains $Url) {
+    $ytArgs = @($ytArgs | Where-Object { $_ -ne $Url }) + @('--no-clean-info-json', '--load-info-json', $plFile)
+    Write-LogOnly "[ytdl-event] playlist from the coordinator's file: $plFile"
 }
 # Playlist positions as yt-dlp's --playlist-items text: 1,2,3,7 -> "1-3,7"
 function Compress-Items([int[]]$nums) {
@@ -3810,6 +3830,32 @@ if ($isCoordinator) {
         if ($_.Name -match '^ytdl-(\d+)-w') { if (-not (Get-Process -Id ([int]$Matches[1]) -ErrorAction SilentlyContinue)) { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue } }
     }
     Clear-StopFiles
+
+    # 1.33.3: the playlist as yt-dlp's own info JSON, built from the scan (every video at its
+    # playlist position, so the workers' -Items pick the same videos and the number prefix and
+    # folder stay the same), shared by all workers through the environment. Skipped when the scan
+    # didn't give the playlist's id and title: the workers then let yt-dlp list it as before.
+    $env:YTDL_PLAYLIST_JSON = $null
+    if ($plMeta -and $plMeta[2] -and $plMeta[8] -and $queueIndex.Count) {
+        try {
+            $byPos = @{}; foreach ($id in $queueIndex.Keys) { $byPos[[int]$queueIndex[$id]] = $id }
+            $cnt = 0; [void][int]::TryParse($plMeta[1], [ref]$cnt)
+            $top = [math]::Max($cnt, ($byPos.Keys | Measure-Object -Maximum).Maximum)
+            $ents = New-Object System.Collections.Generic.List[object]
+            for ($i = 1; $i -le $top; $i++) {
+                $id = if ($byPos.ContainsKey($i)) { $byPos[$i] } else { '' }   # (not in the scan: never picked)
+                $ents.Add([ordered]@{ _type = 'url'; ie_key = 'Youtube'; id = $id; url = $(if ($id) { "https://www.youtube.com/watch?v=$id" } else { '' }) })
+            }
+            $pl = [ordered]@{ _type = 'playlist'; id = $plMeta[2]; title = $plMeta[8]; playlist_count = $top
+                              extractor = 'youtube:tab'; extractor_key = 'YoutubeTab'; webpage_url = $(if ($plMeta[7]) { $plMeta[7] } else { $Url }) }
+            if ($plMeta[3]) { $pl.uploader = $plMeta[3] }; if ($plMeta[4]) { $pl.uploader_id = $plMeta[4] }
+            if ($plMeta[5]) { $pl.channel = $plMeta[5] };  if ($plMeta[6]) { $pl.channel_id = $plMeta[6] }
+            $pl.entries = $ents
+            $plPath = Join-Path $env:TEMP "ytdl-$PID-w0.log.playlist.json"   # (named so the stale-log cleanup above finds it)
+            [IO.File]::WriteAllText($plPath, (ConvertTo-Json -InputObject $pl -Depth 4 -Compress), (New-Object Text.UTF8Encoding $false))
+            $env:YTDL_PLAYLIST_JSON = $plPath
+        } catch { $env:YTDL_PLAYLIST_JSON = $null }
+    }
     Write-Host "ytdl $YtdlVersion | -Parallel: $($work.Count) videos across $n workers$(if ($autoParallel) { ' (default; -Parallel 1 for one at a time)' })$(if ($limitBytes -gt 0) { " | at most $LimitRate/s in total" }) -> $Out" -ForegroundColor Cyan
     Write-Host "To stop: press Ctrl+C here, or run 'ytdl -Stop' in another terminal. To pause: press P (P again resumes), or ytdl -Pause / -Resume." -ForegroundColor DarkGray
 
@@ -3907,6 +3953,12 @@ if ($isCoordinator) {
                             $pc = [double]::Parse($Matches[1], $ci)
                             $w.Part = if ($pc -ge 100) { 0.0 } else { $pc / 100 * (ConvertTo-MiB ([double]::Parse($Matches[2], $ci)) $Matches[3]) }
                             if ($script:barOn -and $pc -lt 100) { Write-LogOnly "[w$($w.K)] $line"; continue }   # the bar shows it
+                        }
+                        # 1.33.3: YouTube's "videos were deleted" notice (twice per listing) once per run, in plain words
+                        if ($line -match 'removed from the playlist because they were deleted|Redownloading playlist API JSON with unavailable videos') {
+                            Write-LogOnly "[w$($w.K)] $line"
+                            if (-not $script:deletedNoted -and $line -match 'deleted') { $script:deletedNoted = $true; Write-Host "[ytdl] Some videos in this playlist were deleted from YouTube; they're skipped." -ForegroundColor DarkGray }
+                            continue
                         }
                         $color = if ($line -match '^ERROR') { 'Red' } elseif ($line -match '^WARNING') { 'Yellow' }
                                  elseif ($line -match '^\[ytdl\]|^===') { 'Cyan' } else { 'Gray' }
@@ -4011,6 +4063,7 @@ if ($isCoordinator) {
         } catch { }
     }
     Write-Host "`n[ytdl] All workers finished (exit codes: $($codes -join ', '))." -ForegroundColor $color
+    if ($env:YTDL_PLAYLIST_JSON) { Remove-Item -LiteralPath $env:YTDL_PLAYLIST_JSON -Force -ErrorAction SilentlyContinue; $env:YTDL_PLAYLIST_JSON = $null }   # 1.33.3
     if ($final -eq 75) { Write-Host "[ytdl] $(Get-BreakerText (Read-GlobalPace)) Completed videos are kept; re-run the same command after that to resume." -ForegroundColor Yellow }   # 1.25.0
     $fl = @($coordFails.Values)
     Save-FailedList $Url $fl; Show-FailedList $fl
@@ -4259,6 +4312,12 @@ function Invoke-Pass([string[]]$passArgs) {
             # Harmless: yt-dlp skips DRM-protected formats from one of its clients and uses the
             # regular formats instead. It's never counted as an error; keep it out of the console.
             if ($line -match 'formats have been skipped as they are DRM protected') { Write-LogOnly $line; return }
+            # 1.33.3: YouTube's "videos were deleted" notice (twice per listing) once per run, in plain words
+            if ($line -match 'removed from the playlist because they were deleted|Redownloading playlist API JSON with unavailable videos') {
+                Write-LogOnly $line
+                if ($Worker -eq 0 -and -not $script:deletedNoted -and $line -match 'deleted') { $script:deletedNoted = $true; Write-Host "[ytdl] Some videos in this playlist were deleted from YouTube; they're skipped." -ForegroundColor DarkGray }
+                return
+            }
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
                 $color = if ($line -match '^ERROR') { 'Red' } elseif ($line -match '^WARNING') { 'Yellow' } else { 'Gray' }
                 Write-Host $line -ForegroundColor $color

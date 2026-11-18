@@ -1,10 +1,10 @@
-# ytdl 1.33.2 — Changelog & Logic Notes
+# ytdl 1.33.3 — Changelog & Logic Notes
 
 **Name:** **tubepacer** is the program (the repository, release and project name); **`ytdl`** is the command you type and the script's file name (`ytdl.ps1`, `ytdl.cmd`). Notes below say `ytdl` because they describe the script.
 
 `ytdl` is a PowerShell wrapper around [yt-dlp](https://github.com/yt-dlp/yt-dlp). It downloads a single YouTube video, an entire playlist or a channel from one URL, can follow channels and playlists and fetch only what is new (1.15.0), with consistent naming, resume and skip-on-re-run, automatic recovery from YouTube's sign-in/cookie problems, a measured remaining-time estimate, and optional parallel downloading.
 
-**Version:** 1.33.2 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
+**Version:** 1.33.3 (2026-11-17) · `ytdl -Version` prints it · constant `$YtdlVersion` in `ytdl.ps1`
 
 **Versioning scheme:** semantic-style. Since 2026-11-12, **2.0.0 and above may be used when warranted** (a major change: different defaults or behaviour, or a redesign); before that, everything stayed in 1.x.x.
 - **x.Y.0 (minor):** new options, features or behaviour changes (e.g. an ETA shown before the first download).
@@ -133,6 +133,14 @@ A release (`tubepacer.zip`) holds these files; extract them together into one fo
 
 ## Changelog
 
+### 1.33.3 — parallel workers reuse the coordinator's playlist; deleted-videos notice once (2026-11-17)
+
+| Part | Detail |
+|---|---|
+| **Fix** | In a `-Parallel` run every worker downloaded the whole playlist listing again (in a real 3-worker run on 2026-11-17, 4 listings of the same 13-video list). The coordinator now writes what its scan found as a yt-dlp playlist info JSON (`YTDL_PLAYLIST_JSON`) and the workers load it (`--load-info-json --no-clean-info-json`); positions, playlist title/count and the archive behave as before. If the file can't be built, workers list as before. It is deleted when the workers finish |
+| **Fix** | YouTube's "videos have been removed from the playlist because they were deleted" warning printed once per listing (6 times in that run). It now goes to the log, and the console shows one line: "Some videos in this playlist were deleted from YouTube; they're skipped." It comes from the scan, so parallel runs still show it |
+
+**Verified:** Check-Ytdl ok. Live, signed in: 3 workers, items 7-13, 7/7 files with the same names and metadata as 1.33.2, 0 playlist fetches by the workers, 53 s, exit 0; 3 workers, items 12-13, notice once, exit 0; single video, notice once. tests\v1.33.2.ps1 and v1.33.0.ps1 (offline): pass except the version line.
 ### 1.33.2 — workers follow a slower folder level between videos (2026-11-17)
 
 | Part | Detail |
