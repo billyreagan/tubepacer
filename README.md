@@ -468,7 +468,7 @@ Every run uses the same PC and connection, and compared tools run in paired roun
   <img alt="Seconds until each tool printed a playlist's size, log scale. 50 videos: ytdl -Estimate 3.9 s (with the finish time), yt-dlp -s 143.8 s; ytdl -Estimate -Precise, which asks for every exact size, 409.3 s; yt-dlp --flat-playlist 3.4 s for count and runtime only. 12 videos: 3.2 s, 37.2 s, 103.3 s and 2.0 s" src=".github/firstanswer-light.svg" width="960">
 </picture>
 
-The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.7, 17 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
+The [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.8, 17 Nov 2026) has the charts, the scripts and the raw results, so every run can be repeated. It predates the name tubepacer and calls the program `ytdl`.
 
 ## Built on yt-dlp
 

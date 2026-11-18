@@ -96,9 +96,11 @@ These apply unless you pass your own `--retry-sleep`.
 
 Measured on one Windows PC and home connection. Every run, script and raw result is in the [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT).
 
-- **Signed in, adaptive pacing (1.24):** 0 bot checks in 208 videos (E5–E6). On the same 6 videos it was 3.3× faster than yt-dlp's fixed sleeps (E5).
+- **Signed in, adaptive pacing (1.24):** 0 bot checks in 208 videos (E5–E6). On the same 6 videos it was 3.4× faster than yt-dlp's fixed sleeps (E5).
 - **Signed out:** no replicated result. The planned rerun was bot-blocked four times on 2026-11-16 and was dropped, so the report makes no signed-out bot-check claim.
 - **1.32.0 against 1.24.2 (T3-lite, 2026-11-17, signed in; rough: 3 videos, 2 rounds):** 0 bot checks or 429s for either in 9 videos. On 3 videos at 1080p (E5) 1.32.0 was slower: 58.8 s against 45.4 s (0.78×, 95% interval 0.31–1.97, 0 of 2 rounds won). Two of its runs started at a raised pace level left over from earlier runs, since the guard steps down only after a clean streak and 30 quiet minutes. Against plain yt-dlp's fixed sleeps (102.2 s, baseline from 2026-11-13) that is 1.74× for 1.32.0 and 2.25× for 1.24.2. After one simulated bot check (E5R, 1 round) both sent about the same number of requests before the next saved file (12 against 13), but 1.32.0 waited longer (105 s against 39 s) and took 155.6 s against 56.7 s. E6 (first byte) was not rerun.
+- **1.32.1 and 1.33.1 against 1.24.2 (suites 16 and 17, 2026-11-17, signed in; 2 videos at 720p, 4 alternating pairs each, fresh state every run):** 1.24.2 needed 0.76× of 1.32.1's wall time (95% interval 0.51–1.14, so no clear difference). Against 1.33.1 it needed 0.98× (0.79–1.23): even, with a median of 18.4 s for both and 2 of 4 pairs won by each. 1.33.1's overhead is clearly higher, 13.4 s against 11.2 s (1.24.2 needed 0.83×, 0.78–0.88), and the pauses between requests (2.8 s a run) account for most of that. 1.33.1 is 1.32.1 plus the account-limit handling, so the two results mostly differ by noise between sittings.
+- **Account limit, simulated (1.33.1, suite 17, 1 run, shared wait shortened from 5 min to 20 s):** one notice, one shared wait of 20.3 s, then "limit has lifted" and both files saved, exit 0, in 47.6 s (the normal run takes 18.4 s). No real account limit was involved.
 
 Not measured:
 
