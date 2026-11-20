@@ -85,7 +85,7 @@ Fix hints match how each tool was installed.
 
 Downloaders usually dodge YouTube's limits with a fixed sleep on every video, needed or not. Signed in, tubepacer starts with no pause between videos, backs off only when YouTube pushes back, and shares one budget across every run and worker on the PC, so one bot check slows everything and a breaker halts every run so a temporary block isn't extended. It also recovers from what ends long runs: rotated cookies, silent 360p replies, expired stream URLs and hangs.
 
-Measured on one PC and home connection ([full report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT)). "Not documented": none of the 78 downloaders surveyed in the report lists it in its docs.
+Measured on one PC and home connection ([full report](https://claude.ai/artifact/RLR1bpGc2kVgoo3Ca6LgTM)). "Not documented": none of the 78 downloaders surveyed in the report lists it in its docs.
 
 | | tubepacer | Others |
 |---|---|---|
@@ -366,7 +366,7 @@ Tools run in paired rounds on the same videos. A lead counts only if its 95% int
   <img alt="Seconds until each tool printed a playlist's size, log scale. 50 videos: ytdl -Estimate 3.9 s (with the finish time), yt-dlp -s 143.8 s; ytdl -Estimate -Precise, which asks for every exact size, 409.3 s; yt-dlp --flat-playlist 3.4 s for count and runtime only. 12 videos: 3.2 s, 37.2 s, 103.3 s and 2.0 s" src=".github/firstanswer-light.svg" width="960">
 </picture>
 
-Charts, scripts and raw data for every run: the [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT) (v3.9, 17 Nov 2026; it predates the name).
+Charts, scripts and raw data for every run: the [benchmark report](https://claude.ai/artifact/RLR1bpGc2kVgoo3Ca6LgTM) (v4.0, 20 Nov 2026; it predates the name).
 
 ## Built on yt-dlp
 

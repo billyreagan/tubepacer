@@ -94,7 +94,7 @@ These apply unless you pass your own `--retry-sleep`.
 
 ## What is measured, and what isn't
 
-Measured on one Windows PC and home connection. Every run, script and raw result is in the [benchmark report](https://claude.ai/artifact/HBzdTEVdfXRFG6b9RpPMiT).
+Measured on one Windows PC and home connection. Every run, script and raw result is in the [benchmark report](https://claude.ai/artifact/RLR1bpGc2kVgoo3Ca6LgTM).
 
 - **Signed in, adaptive pacing (1.24):** 0 bot checks in 208 videos (E5–E6). On the same 6 videos it was 3.4× faster than yt-dlp's fixed sleeps (E5).
 - **Signed out:** no replicated result. The planned rerun was bot-blocked four times on 2026-11-16 and was dropped, so the report makes no signed-out bot-check claim.
